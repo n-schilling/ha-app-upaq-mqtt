@@ -1,0 +1,7 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Runs the UP-AirQuality MQTT bridge
+# ==============================================================================
+export PYTHONPATH=/usr/lib
+exec python3 -m upaq_bridge

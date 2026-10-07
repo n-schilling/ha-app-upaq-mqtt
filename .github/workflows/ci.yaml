@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: App configuration
+        uses: frenck/action-addon-linter@b9cfd1bc62ba60d2c4fc96317b5f7ada5923f4a7 # v2.21.1
+        with:
+          path: ./upaq_mqtt
+      - name: Changelog has the version
+        run: .github/scripts/changelog-section.sh upaq_mqtt/CHANGELOG.md "$(yq -r '.version' upaq_mqtt/config.yaml)" > /dev/null
+      - name: Shell scripts
+        run: >-
+          shellcheck --shell=bash --severity=warning
+          upaq_mqtt/rootfs/etc/s6-overlay/s6-rc.d/bridge/run
+          upaq_mqtt/rootfs/etc/s6-overlay/s6-rc.d/bridge/finish
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install
+        run: pip install -r upaq_mqtt/requirements.txt pytest==9.1.1 pytest-aiohttp==1.1.1 ruff==0.16.10
+      - name: Ruff
+        run: ruff check upaq_mqtt/rootfs/usr/lib/upaq_bridge tests
+      - name: Start a broker
+        run: >-
+          docker run -d --name broker -p 1883:1883
+          -v "${PWD}/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.0.22
+      - name: Test
+        env:
+          MQTT_TEST_HOST: localhost
+        run: pytest -v
+      - name: Broker log
+        if: failure()
+        run: docker logs broker
+
+  image:
+    name: Build and start (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build
+        env:
+          ARCH: ${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          base=$(yq -r ".build_from.${ARCH}" upaq_mqtt/build.yaml)
+          version=$(yq -r '.version' upaq_mqtt/config.yaml)
+          docker buildx build --platform "${PLATFORM}" --build-arg "BUILD_FROM=${base}" \
+            --build-arg "BUILD_VERSION=${version}" --load -t upaq-mqtt:test upaq_mqtt
+      - name: Start without options
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        # The bridge loads, finds no options and says what to set
+        run: |
+          out=$(docker run --rm --network none --platform "${PLATFORM}" -e PYTHONPATH=/usr/lib \
+            --entrypoint python3 upaq-mqtt:test -m upaq_bridge 2>&1 || true)
+          echo "${out}"
+          grep -q '/data/options.json not readable' <<< "${out}"

@@ -1,0 +1,36 @@
+configuration:
+  protect_host:
+    name: Protect-Host
+    description: Hostname oder IP-Adresse der UniFi-Konsole mit Protect.
+  protect_username:
+    name: Protect-Benutzer
+    description: Lokaler Protect-Benutzer. Nur-Lesen genügt, solange die Steuerung aus ist.
+  protect_password:
+    name: Protect-Passwort
+  verify_ssl:
+    name: Zertifikat prüfen
+    description: Prüft das Zertifikat der Konsole gegen vertrauenswürdige CAs; die meisten Konsolen haben ein selbstsigniertes, dann besser den Fingerabdruck nutzen.
+  certificate_fingerprint:
+    name: Zertifikats-Fingerabdruck
+    description: SHA-256-Fingerabdruck des Konsolen-Zertifikats; das Log zeigt ihn, solange er fehlt. Schützt das Passwort vor einem Angreifer dazwischen.
+  enable_controls:
+    name: Steuerung aktivieren
+    description: Legt LED- und Schwellwert-Steuerungen in Home Assistant an; der Protect-Benutzer braucht dann Schreibrechte.
+  min_interval:
+    name: Mindestabstand
+    description: Sekunden zwischen zwei veröffentlichten Werten eines Messwerts; 0 sendet jede Änderung (etwa sekündlich).
+  discovery_prefix:
+    name: MQTT-Discovery-Präfix
+    description: Präfix, auf dem Home Assistant MQTT-Discovery empfängt.
+  mqtt_host:
+    name: MQTT-Host
+    description: Nur für einen Broker, den der Supervisor nicht kennt; leer nutzt die Mosquitto-Broker-App.
+  mqtt_port:
+    name: MQTT-Port
+  mqtt_username:
+    name: MQTT-Benutzer
+  mqtt_password:
+    name: MQTT-Passwort
+  log_level:
+    name: Log-Level
+    description: "Wie viel die App in ihr Log schreibt: info, warning oder error."

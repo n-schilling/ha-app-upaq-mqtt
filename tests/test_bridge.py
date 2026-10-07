@@ -1,0 +1,241 @@
+"""The bridge between Protect updates, MQTT and Home Assistant commands."""
+
+import asyncio
+import json
+
+import pytest
+
+from conftest import KEY, FakeProtect, Recorder, packet, sensor
+from upaq_bridge.bridge import Bridge, Resync
+from upaq_bridge.protect import ProtectError
+
+BASE = f"up_airquality/{KEY}"
+ID = "5f0c1e2d3a4b5c6d7e8f9a0b"
+DEVICE = f"homeassistant/device/up_airquality_{KEY}/config"
+
+
+def components(mqtt, topic=DEVICE):
+    return json.loads(mqtt.last(topic))["components"]
+
+
+def update(changes, action="update", sensor_id=ID):
+    return packet({"action": action, "modelKey": "sensor", "id": sensor_id}, changes)
+
+
+@pytest.fixture
+def make(ctx, tmp_path):
+    def build(controls=False, min_interval=60, devices=None, held=None):
+        mqtt, protect = Recorder(), FakeProtect()
+        asked = []
+
+        async def retained(filters):
+            asked.extend(filters)
+            return dict(held or {})
+
+        bridge = Bridge(mqtt, protect, ctx, controls=controls, min_interval=min_interval,
+                        store=tmp_path / "sensors.json", retained=retained, migrate_wait=0)
+        bridge.asked = asked
+        return bridge, mqtt, protect, {"sensors": devices if devices is not None else [sensor()],
+                                       "lastUpdateId": "u1"}
+    return build
+
+
+async def test_setup_announces_and_publishes_everything(make):
+    bridge, mqtt, _, boot = make()
+    await bridge.setup(boot)
+    assert mqtt.last(f"{BASE}/availability") == "online"
+    assert mqtt.last(f"{BASE}/co2") == "655"
+    assert mqtt.last(f"{BASE}/pm2p5") == "4.59"
+    assert json.loads(mqtt.last(f"{BASE}/co2/attributes")) == {"status": "good"}
+    assert mqtt.last(f"{BASE}/firmware_version/state") == "1.0.16"
+    assert mqtt.last(f"{BASE}/firmware_update/state") == "OFF"
+    assert components(mqtt)["co2"]["unique_id"] == f"up_aq_{KEY}_co2"
+    assert [t for t in mqtt.topics() if t.endswith("/config")] == [DEVICE]
+    # Controls off: no control entities, no settings published
+    assert "led_brightness" not in components(mqtt)
+    assert mqtt.last(f"{BASE}/led_brightness/state") is None
+    assert all(retain for _, _, retain in mqtt.messages)
+
+
+async def test_only_changed_readings_are_sent(make):
+    bridge, mqtt, _, boot = make(min_interval=0)
+    await bridge.setup(boot)
+    mqtt.clear()
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": 655}, "aqi": {"value": 20}}}))
+    assert mqtt.topics() == [f"{BASE}/aqi"]
+
+
+async def test_throttle_holds_and_sends_the_latest(make):
+    bridge, mqtt, _, boot = make(min_interval=1)
+    await bridge.setup(boot)
+    flusher = asyncio.create_task(bridge.flush_loop())
+    mqtt.clear()
+    for value in (660, 670, 680):
+        await bridge.handle_packet(update({"airQuality": {"co2": {"value": value}}}))
+    assert mqtt.last(f"{BASE}/co2") is None
+    await asyncio.sleep(1.2)
+    assert [v for t, v, _ in mqtt.messages if t == f"{BASE}/co2"] == ["680"]
+    # Back to the value already sent: nothing held, nothing sent
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": 680}}}))
+    flusher.cancel()
+
+
+async def test_status_change_is_sent_at_once(make):
+    bridge, mqtt, _, boot = make(min_interval=3600)
+    await bridge.setup(boot)
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": 1500, "status": "poor"}}}))
+    assert json.loads(mqtt.last(f"{BASE}/co2/attributes")) == {"status": "poor"}
+
+
+async def test_new_reading_announces_its_entity(make):
+    bridge, mqtt, _, boot = make(min_interval=0)
+    await bridge.setup(boot)
+    await bridge.handle_packet(update({"airQuality": {"voc": {"value": 107, "status": "good"}}}))
+    assert components(mqtt)["voc"]["name"] == "VOC Index"
+    assert mqtt.last(f"{BASE}/voc") == "107"
+
+
+async def test_disconnected_sensor_turns_unavailable(make):
+    bridge, mqtt, _, boot = make()
+    await bridge.setup(boot)
+    await bridge.handle_packet(update({"isConnected": False, "state": "DISCONNECTED"}))
+    assert mqtt.last(f"{BASE}/availability") == "offline"
+
+
+async def test_rename_updates_the_device(make):
+    bridge, mqtt, _, boot = make()
+    await bridge.setup(boot)
+    await bridge.handle_packet(update({"name": "Office"}))
+    assert json.loads(mqtt.last(DEVICE))["device"]["name"] == "Office"
+
+
+async def test_firmware_update_available(make):
+    bridge, mqtt, _, boot = make()
+    await bridge.setup(boot)
+    await bridge.handle_packet(update({"latestFirmwareVersion": "1.0.17"}))
+    assert mqtt.last(f"{BASE}/firmware_update/state") == "ON"
+
+
+async def test_added_sensor_reads_the_bootstrap_again(make):
+    bridge, _, _, boot = make()
+    await bridge.setup(boot)
+    with pytest.raises(Resync):
+        await bridge.handle_packet(update({}, action="add", sensor_id="other"))
+
+
+async def test_other_devices_are_ignored(make):
+    bridge, mqtt, _, boot = make(min_interval=0)
+    await bridge.setup(boot)
+    mqtt.clear()
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": 999}}}, sensor_id="other"))
+    assert mqtt.messages == []
+
+
+async def test_gone_sensor_is_removed(make):
+    bridge, mqtt, _, boot = make()
+    await bridge.setup(boot)
+    bridge2, mqtt2, _, boot2 = make(devices=[])
+    await bridge2.setup(boot2)
+    assert mqtt2.last(DEVICE) == ""
+    assert mqtt2.last(f"{BASE}/co2") == ""
+    assert mqtt2.last(f"{BASE}/availability") == ""
+
+
+async def test_equal_names_get_the_mac(make):
+    other = sensor(id="x2", mac="00:00:5E:00:53:02")
+    bridge, mqtt, _, boot = make(devices=[sensor(), other])
+    await bridge.setup(boot)
+    cfg = json.loads(mqtt.last("homeassistant/device/up_airquality_00005e005302/config"))
+    assert cfg["device"]["name"] == "Living room (005302)"
+
+
+async def test_single_entity_topics_are_handed_over(make):
+    legacy = f"homeassistant/sensor/protect_air_quality_{KEY}/co2/config"
+    bridge, mqtt, _, boot = make(held={legacy: '{"unique_id": "x"}', "homeassistant/sensor/other/co2/config": "{}"})
+    await bridge.setup(boot)
+    assert DEVICE in bridge.asked and f"homeassistant/+/protect_air_quality_{KEY}/+/config" in bridge.asked
+    sent = [(t, v) for t, v, _ in mqtt.messages if t in (legacy, DEVICE)]
+    assert [t for t, _ in sent] == [legacy, DEVICE, legacy]
+    assert json.loads(sent[0][1]) == {"migrate_discovery": True}
+    assert sent[2][1] == ""
+    assert mqtt.last("homeassistant/sensor/other/co2/config") is None
+
+
+async def test_switched_off_controls_are_removed(make):
+    on, mqtt_on, _, boot = make(controls=True)
+    await on.setup(boot)
+    before = mqtt_on.last(DEVICE)
+    bridge, mqtt, _, boot = make(controls=False, held={DEVICE: before})
+    await bridge.setup(boot)
+    sent = [json.loads(v) for t, v, _ in mqtt.messages if t == DEVICE]
+    assert sent[0]["components"]["led_brightness"] == {"platform": "number"}
+    assert "led_brightness" not in sent[1]["components"]
+    assert "co2" in sent[1]["components"]
+
+
+async def test_unchanged_device_message_is_not_sent_again(make):
+    bridge, mqtt, _, boot = make()
+    await bridge.setup(boot)
+    mqtt.clear()
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": 700}}}))
+    assert DEVICE not in mqtt.topics()
+
+
+async def test_offline_when_protect_is_gone(make):
+    bridge, mqtt, _, boot = make()
+    await bridge.setup(boot)
+    await bridge.offline()
+    assert mqtt.last(f"{BASE}/availability") == "offline"
+
+
+# --- Controls ------------------------------------------------------------------
+
+async def test_controls_publish_settings(make):
+    bridge, mqtt, _, boot = make(controls=True)
+    await bridge.setup(boot)
+    assert mqtt.last(f"{BASE}/led_brightness/state") == "40"
+    assert mqtt.last(f"{BASE}/led_metric/state") == "Air Quality"
+    assert mqtt.last(f"{BASE}/status_light/state") == "ON"
+    assert mqtt.last(f"{BASE}/thresh/co2/high/state") == "1400"
+
+
+@pytest.mark.parametrize(("topic", "value", "changes", "state"), [
+    ("led_brightness", "55", {"airQualitySettings": {"ringLedBrightness": 55}}, "55"),
+    ("led_metric", "CO2", {"airQualitySettings": {"ringLedMetric": 0}}, "CO2"),
+    ("status_light", "off", {"ledSettings": {"isEnabled": False}}, "OFF"),
+    ("night_mode", "ON", {"airQualitySettings": {"nightModeEnabled": True}}, "ON"),
+    ("thresh/co2/high", "1500", {"airQualitySettings": {"co2Settings": {"highThreshold": 1500}}}, "1500"),
+])
+async def test_commands_patch_protect(make, topic, value, changes, state):
+    bridge, mqtt, protect, boot = make(controls=True)
+    await bridge.setup(boot)
+    await bridge.handle_command(f"{BASE}/{topic}/set", value)
+    assert protect.patches == [(ID, changes)]
+    assert mqtt.last(f"{BASE}/{topic}/state") == state
+
+
+@pytest.mark.parametrize(("topic", "value"), [
+    ("led_brightness", "150"), ("led_metric", "PM2.5"), ("status_light", "maybe"),
+    ("thresh/co2/high", "99999"), ("thresh/nope/high", "1"), ("unknown", "1"),
+    ("thresh/temperature/high", "25"),  # the fixture's sensor offers no temperature threshold
+])
+async def test_invalid_commands_are_ignored(make, topic, value):
+    bridge, _, protect, boot = make(controls=True)
+    await bridge.setup(boot)
+    await bridge.handle_command(f"{BASE}/{topic}/set", value)
+    assert protect.patches == []
+
+
+async def test_commands_need_controls(make):
+    bridge, _, protect, boot = make(controls=False)
+    await bridge.setup(boot)
+    await bridge.handle_command(f"{BASE}/led_brightness/set", "55")
+    assert protect.patches == []
+
+
+async def test_failed_patch_keeps_the_state(make):
+    bridge, mqtt, protect, boot = make(controls=True)
+    await bridge.setup(boot)
+    protect.fail = ProtectError("offline")
+    await bridge.handle_command(f"{BASE}/led_brightness/set", "55")
+    assert mqtt.last(f"{BASE}/led_brightness/state") == "40"
