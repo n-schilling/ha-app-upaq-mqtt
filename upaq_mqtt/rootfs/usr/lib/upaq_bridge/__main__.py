@@ -96,6 +96,7 @@ class Router:
         if controls:
             await self._mqtt.subscribe("up_airquality/+/+/set", qos=1)
             await self._mqtt.subscribe("up_airquality/+/thresh/+/+/set", qos=1)
+            await self._mqtt.subscribe("up_airquality/+/events/+/set", qos=1)
         async for message in self._mqtt.messages:
             topic = str(message.topic)
             raw = message.payload.decode(errors="replace") if isinstance(message.payload, bytes) \

@@ -86,7 +86,7 @@ class Bridge:
         self._last: dict[str, float] = {}        # reading topic -> time sent
         self._pending: dict[str, str] = {}       # reading topic -> held payload
         self._wake = asyncio.Event()
-        self._components: dict[str, set[str]] = {}   # sensor key -> announced entities
+        self._announced: dict[str, dict[str, str]] = {}   # sensor key -> entity -> platform
 
     # --- MQTT ----------------------------------------------------------------
     async def _send(self, topic: str, value: str, retain: bool = True) -> None:
@@ -186,17 +186,23 @@ class Bridge:
         """Sends the sensor's device message when it changed.
 
         Entities of the previous message that are gone (controls switched
-        off) are first sent with their platform only, which removes them.
+        off, a safe zone removed in Protect) are first sent with their
+        platform only, which removes them. The previous message is the one
+        held by the broker at the start, later the last one sent.
         """
         payload = d.device_payload(self.sensors[key], self._names[key], self._ctx, self._controls)
-        self._components[key] = set(payload["components"])
         topic = d.device_topic(self._ctx.prefix, key)
-        try:
-            old = (json.loads(before) if before else {}).get("components") or {}
-        except (ValueError, AttributeError):
-            old = {}
-        gone = {k: {"platform": v.get("platform") or v.get("p")} for k, v in old.items()
-                if k not in payload["components"] and isinstance(v, dict)}
+        if before is not None or key not in self._announced:
+            try:
+                held = (json.loads(before) if before else {}).get("components") or {}
+                old = {k: v.get("platform") or v.get("p") for k, v in held.items() if isinstance(v, dict)}
+            except (ValueError, AttributeError):
+                old = {}
+        else:
+            old = self._announced[key]
+        self._announced[key] = {k: v["platform"] for k, v in payload["components"].items()}
+        gone = {k: {"platform": platform} for k, platform in old.items()
+                if k not in payload["components"] and platform}
         if gone:
             removal = {**payload, "components": {**payload["components"], **gone}}
             await self._send(topic, json.dumps(removal))
@@ -212,7 +218,7 @@ class Bridge:
             self._names = display_names(list(self.sensors.values()))
             await self._announce(key)
         if isinstance(changes.get("airQuality"), dict):
-            if not initial and any(m in d.METRICS and m not in self._components.get(key, ())
+            if not initial and any(m in d.METRICS and m not in self._announced.get(key, {})
                                    for m in changes["airQuality"]):
                 await self._announce(key)   # a reading the sensor did not report before
             for metric, entry in changes["airQuality"].items():
@@ -224,10 +230,32 @@ class Bridge:
                 if full.get("status") is not None:
                     await self._changed(f"{base}/{metric}/attributes",
                                         json.dumps({"status": full["status"]}))
+        if "airQualitySettings" in changes and not initial:
+            await self._announce(key)   # safe zones and switches may have come or gone
+        if initial or "airQuality" in changes or "airQualitySettings" in changes:
+            await self._status(key)
         if initial or any(f in changes for f in FIRMWARE_FIELDS):
             await self._firmware(key)
         if self._controls and (initial or "airQualitySettings" in changes or "ledSettings" in changes):
             await self._settings(key)
+
+    async def _status(self, key: str) -> None:
+        """Vape detection and the safe zones; sent at once, not throttled."""
+        device = self.sensors[key]
+        base = d.base_topic(key)
+        readings = device.get("airQuality") or {}
+        vape = readings.get("vape")
+        if isinstance(vape, dict) and vape.get("status") is not None:
+            # Protect rates the vape index "safe" until it detects vaping
+            await self._changed(f"{base}/vape_detected", "OFF" if vape["status"] == "safe" else "ON")
+        for metric in d.threshold_metrics(device):
+            zone = d.safe_zone(device, metric)
+            entry = readings.get(metric)
+            if not zone or not isinstance(entry, dict) or not isinstance(entry.get("value"), (int, float)):
+                continue
+            await self._changed(f"{base}/{metric}/safe_zone", json.dumps({"low": zone[0], "high": zone[1]}))
+            await self._changed(f"{base}/{metric}/outside_safe_zone",
+                                "ON" if d.outside_safe_zone(entry["value"], zone) else "OFF")
 
     async def _firmware(self, key: str) -> None:
         device = self.sensors[key]
@@ -254,6 +282,11 @@ class Bridge:
         for name, value in values.items():
             if value is not None:
                 await self._changed(f"{base}/{name}/state", payload(value))
+        for metric in d.event_metrics(device):
+            on = aqs[f"{metric}Settings"]["isEnabled"]
+            await self._changed(f"{base}/events/{metric}/state", "ON" if on else "OFF")
+        if (sensitivity := d.vape_sensitivity(device)) is not None:
+            await self._changed(f"{base}/vape_sensitivity/state", payload(sensitivity))
         for metric in d.threshold_metrics(device):
             limits = aqs.get(f"{metric}Settings") or {}
             for bound, field in d.BOUNDS.items():
@@ -335,6 +368,18 @@ class Bridge:
             case ["night_brightness"]:
                 v = percent()
                 return {"airQualitySettings": {"nightModeBrightness": v}}, "night_brightness/state", str(v)
+            case ["events", metric]:
+                if metric not in d.event_metrics(device):
+                    raise ValueError("no such reading")
+                on = on_off()
+                return ({"airQualitySettings": {f"{metric}Settings": {"isEnabled": on}}},
+                        f"events/{metric}/state", "ON" if on else "OFF")
+            case ["vape_sensitivity"]:
+                if d.vape_sensitivity(device) is None:
+                    raise ValueError("the sensor has no vape sensitivity")
+                v = percent()
+                return ({"airQualitySettings": {"vapeSensitivitySettings": {"sensitivity": v}}},
+                        "vape_sensitivity/state", str(v))
             case ["thresh", metric, bound]:
                 if metric not in d.threshold_metrics(device) or bound not in d.BOUNDS:
                     raise ValueError("no such threshold")

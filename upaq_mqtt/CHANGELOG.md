@@ -2,7 +2,15 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.2.0] - 2026-10-07
+## [2.3.0] - 2026-10-07
+
+### Added
+
+- *Vape Detected*: on when Protect rates the vape index anything but `safe`
+- *Reading* Outside Safe Zone: for every reading with a safe zone set in Protect, on while the reading is outside of it; sent at once, regardless of `min_interval`. Zones added or removed in Protect add or remove the sensor
+- With `enable_controls`: the *Events to Capture* switch per reading and the vape sensitivity
+
+## 2.2.0 - 2026-10-07
 
 ### Added
 
@@ -81,4 +89,4 @@ A bridge of its own replaces the UPAQ-MQTT bridge. Entity IDs, unique IDs and hi
 
 - First version in this repository
 
-[2.2.0]: https://github.com/n-schilling/ha-app-upaq-mqtt/releases/tag/v2.2.0
+[2.3.0]: https://github.com/n-schilling/ha-app-upaq-mqtt/releases/tag/v2.3.0

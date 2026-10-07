@@ -40,9 +40,13 @@ Per sensor, named after the sensor in Protect:
 | Entity | Meaning |
 |---|---|
 | AQI, CO2, PM1.0, PM2.5, PM4.0, PM10, TVOC Index, VOC Index, NOx Index, Vape Index, … | Readings; the `status` attribute holds Protect's rating (e.g. `good`, `moderate`) |
+| Vape Detected | On when Protect rates the vape index anything but `safe` |
+| *Reading* Outside Safe Zone | Only for readings with a safe zone set in Protect (*Add Safe Zone* under *Events to Capture*); on while the reading is below or above it, at once and regardless of `min_interval`. The attributes hold the zone. Read access is enough, so the zones you keep in UniFi drive your automations |
 | Firmware Version | Installed firmware (diagnostic) |
 | Firmware Update Available | On when Protect offers newer firmware (diagnostic) |
 | LED Brightness, LED Metric, Status Light, Night Mode, Night Mode Brightness | Only with `enable_controls` |
+| *Reading* Events | Only with `enable_controls`: the *Events to Capture* switch of a reading in Protect |
+| Vape Sensitivity | Only with `enable_controls`: Protect's vape sensitivity in % |
 | *Reading* Low / High Threshold | Only with `enable_controls`, for every reading the sensor offers alert thresholds for; disabled by default, enable the ones you need. Their ranges are the measurement ranges of Ubiquiti's data sheet; TVOC is not in it and gets a wide range |
 
 A sensor's entities turn unavailable when it disconnects from Protect, when Protect is out of reach, or when the bridge stops. Readings are retained, so they are back right after a restart of Home Assistant.
@@ -61,6 +65,33 @@ actions:
   - action: notify.notify
     data:
       message: "CO2 in the living room is {{ states('sensor.living_room_co2') }} ppm, time to air the room."
+```
+
+Notify when vaping is detected in a room:
+
+```yaml
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.kids_room_vape_detected
+    to: "on"
+actions:
+  - action: notify.notify
+    data:
+      message: "Vaping detected in the kids' room."
+```
+
+Air the room while CO2 is outside the safe zone you set in UniFi:
+
+```yaml
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.living_room_co2_outside_safe_zone
+    to: "on"
+    for: "00:05:00"
+actions:
+  - action: notify.notify
+    data:
+      message: "CO2 in the living room is outside its safe zone: {{ states('sensor.living_room_co2') }} ppm."
 ```
 
 The entity IDs follow the sensor names in Protect; adjust them to yours.

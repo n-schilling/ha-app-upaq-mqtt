@@ -239,3 +239,68 @@ async def test_failed_patch_keeps_the_state(make):
     protect.fail = ProtectError("offline")
     await bridge.handle_command(f"{BASE}/led_brightness/set", "55")
     assert mqtt.last(f"{BASE}/led_brightness/state") == "40"
+
+
+# --- Vape detection and safe zones ---------------------------------------------
+
+def vape_sensor(status="safe", **extra):
+    device = sensor(**extra)
+    device["airQuality"] = {**device["airQuality"], "vape": {"value": 0, "status": status}}
+    return device
+
+
+async def test_vape_detected_follows_the_protect_status(make):
+    bridge, mqtt, _, boot = make(devices=[vape_sensor()])
+    await bridge.setup(boot)
+    assert mqtt.last(f"{BASE}/vape_detected") == "OFF"
+    await bridge.handle_packet(update({"airQuality": {"vape": {"value": 80, "status": "detected"}}}))
+    assert mqtt.last(f"{BASE}/vape_detected") == "ON"
+
+
+async def test_outside_safe_zone_at_once_without_throttle(make):
+    bridge, mqtt, _, boot = make(min_interval=3600)
+    await bridge.setup(boot)
+    # The fixture's CO2 safe zone is 800 to 1400; 655 is below it
+    assert mqtt.last(f"{BASE}/co2/outside_safe_zone") == "ON"
+    assert json.loads(mqtt.last(f"{BASE}/co2/safe_zone")) == {"low": 800, "high": 1400}
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": 1000}}}))
+    assert mqtt.last(f"{BASE}/co2/outside_safe_zone") == "OFF"
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": 1500}}}))
+    assert mqtt.last(f"{BASE}/co2/outside_safe_zone") == "ON"
+    assert mqtt.last(f"{BASE}/co2") == "655"   # the reading itself waits for min_interval
+
+
+async def test_safe_zone_removed_in_protect_removes_its_sensor(make):
+    bridge, mqtt, _, boot = make()
+    await bridge.setup(boot)
+    assert "co2_outside_safe_zone" in components(mqtt)
+    mqtt.clear()
+    await bridge.handle_packet(update({"airQualitySettings": {"co2Settings": {"lowThreshold": None, "highThreshold": None}}}))
+    sent = [json.loads(v) for t, v, _ in mqtt.messages if t == DEVICE]
+    assert sent[0]["components"]["co2_outside_safe_zone"] == {"platform": "binary_sensor"}
+    assert "co2_outside_safe_zone" not in sent[-1]["components"]
+
+
+async def test_new_safe_zone_adds_its_sensor(make):
+    bridge, mqtt, _, boot = make()
+    await bridge.setup(boot)
+    await bridge.handle_packet(update({"airQualitySettings": {"pm2p5Settings": {"lowThreshold": None, "highThreshold": 10}}}))
+    assert "pm2p5_outside_safe_zone" in components(mqtt)
+    assert mqtt.last(f"{BASE}/pm2p5/outside_safe_zone") == "OFF"
+
+
+async def test_event_switch_and_vape_sensitivity_commands(make):
+    device = vape_sensor()
+    device["airQualitySettings"]["vapeSensitivitySettings"] = {"isEnabled": True, "sensitivity": 50}
+    device["airQualitySettings"]["co2Settings"]["isEnabled"] = True
+    bridge, mqtt, protect, boot = make(controls=True, devices=[device])
+    await bridge.setup(boot)
+    assert mqtt.last(f"{BASE}/events/co2/state") == "ON"
+    assert mqtt.last(f"{BASE}/vape_sensitivity/state") == "50"
+    await bridge.handle_command(f"{BASE}/events/co2/set", "OFF")
+    await bridge.handle_command(f"{BASE}/vape_sensitivity/set", "70")
+    assert protect.patches == [
+        (ID, {"airQualitySettings": {"co2Settings": {"isEnabled": False}}}),
+        (ID, {"airQualitySettings": {"vapeSensitivitySettings": {"sensitivity": 70}}}),
+    ]
+    assert mqtt.last(f"{BASE}/events/co2/state") == "OFF"

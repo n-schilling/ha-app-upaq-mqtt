@@ -77,6 +77,31 @@ def threshold_metrics(device: dict) -> list[str]:
     return found
 
 
+def safe_zone(device: dict, metric: str) -> tuple[float | None, float | None] | None:
+    """The safe zone set in Protect for a reading ("Add Safe Zone"), or None."""
+    settings = (device.get("airQualitySettings") or {}).get(f"{metric}Settings") or {}
+    low, high = settings.get(BOUNDS["low"]), settings.get(BOUNDS["high"])
+    return None if low is None and high is None else (low, high)
+
+
+def outside_safe_zone(value: float, zone: tuple[float | None, float | None]) -> bool:
+    low, high = zone
+    return (low is not None and value < low) or (high is not None and value > high)
+
+
+def event_metrics(device: dict) -> list[str]:
+    """Readings with an "Events to Capture" switch: <reading>Settings.isEnabled."""
+    settings = device.get("airQualitySettings") or {}
+    return [field.removesuffix("Settings") for field, value in settings.items()
+            if field.endswith("Settings") and field.removesuffix("Settings") in RANGES
+            and isinstance(value, dict) and isinstance(value.get("isEnabled"), bool)]
+
+
+def vape_sensitivity(device: dict) -> int | None:
+    value = ((device.get("airQualitySettings") or {}).get("vapeSensitivitySettings") or {}).get("sensitivity")
+    return value if isinstance(value, (int, float)) else None
+
+
 def sensor_key(device: dict) -> str | None:
     """The sensor's MAC (or ID) without separators, lower case."""
     for field in ("mac", "id"):
@@ -159,6 +184,30 @@ def reading_components(device: dict) -> dict[str, dict]:
     return out
 
 
+def status_components(device: dict) -> dict[str, dict]:
+    """Vape detection, and per reading with a safe zone in Protect whether it
+    is outside of it; both need read access only."""
+    key = sensor_key(device)
+    base = base_topic(key)
+    readings = device.get("airQuality") or {}
+    on_off = {"payload_on": "ON", "payload_off": "OFF"}
+    out: dict[str, dict] = {}
+    if isinstance(readings.get("vape"), dict):
+        out["vape_detected"] = _entity("binary_sensor", key, "vape_detected", "Vape Detected",
+                                       state_topic=f"{base}/vape_detected", icon="mdi:smoke",
+                                       **on_off)
+    for metric_key in threshold_metrics(device):
+        if isinstance(readings.get(metric_key), dict) and safe_zone(device, metric_key):
+            metric = METRICS.get(metric_key)
+            out[f"{metric_key}_outside_safe_zone"] = _entity(
+                "binary_sensor", key, f"{metric_key}_outside_safe_zone",
+                f"{metric.name if metric else metric_key} Outside Safe Zone",
+                state_topic=f"{base}/{metric_key}/outside_safe_zone",
+                json_attributes_topic=f"{base}/{metric_key}/safe_zone",
+                device_class="problem", **on_off)
+    return out
+
+
 def diagnostic_components(device: dict) -> dict[str, dict]:
     key = sensor_key(device)
     base = base_topic(key)
@@ -195,6 +244,16 @@ def control_components(device: dict) -> dict[str, dict]:
                                 **switch, icon="mdi:weather-night")
     out["night_brightness"] = _entity("number", key, "night_brightness", "Night Mode Brightness",
                                       **io("night_brightness"), **slider, icon="mdi:brightness-3")
+    for metric_key in event_metrics(device):
+        metric = METRICS.get(metric_key)
+        out[f"{metric_key}_events"] = _entity(
+            "switch", key, f"{metric_key}_events", f"{metric.name if metric else metric_key} Events",
+            command_topic=f"{base}/events/{metric_key}/set", state_topic=f"{base}/events/{metric_key}/state",
+            entity_category="config", icon="mdi:bell-ring-outline", **switch)
+    if vape_sensitivity(device) is not None:
+        out["vape_sensitivity"] = _entity("number", key, "vape_sensitivity", "Vape Sensitivity",
+                                          **io("vape_sensitivity"), **slider,
+                                          unit_of_measurement="%", icon="mdi:smoke")
     for metric_key in threshold_metrics(device):
         metric = METRICS.get(metric_key)
         low, high = RANGES[metric_key]
@@ -217,7 +276,7 @@ def control_components(device: dict) -> dict[str, dict]:
 def device_payload(device: dict, name: str, ctx: Context, controls: bool) -> dict[str, Any]:
     """The one discovery message of a sensor with all its entities."""
     key = sensor_key(device)
-    components = {**reading_components(device), **diagnostic_components(device)}
+    components = {**reading_components(device), **status_components(device), **diagnostic_components(device)}
     if controls:
         components.update(control_components(device))
     return {
@@ -234,8 +293,11 @@ def device_payload(device: dict, name: str, ctx: Context, controls: bool) -> dic
 def state_topics(key: str) -> list[str]:
     """Every state topic a sensor may have, to remove a gone sensor."""
     stub = {"mac": key, "id": key, "airQuality": {m: {} for m in METRICS},
-            "airQualitySettings": {f"{m}Settings": dict.fromkeys(BOUNDS.values()) for m in RANGES}}
-    comps = {**reading_components(stub), **diagnostic_components(stub), **control_components(stub)}
+            "airQualitySettings": {
+                **{f"{m}Settings": {"isEnabled": True, BOUNDS["low"]: 0, BOUNDS["high"]: 1} for m in RANGES},
+                "vapeSensitivitySettings": {"sensitivity": 50}}}
+    comps = {**reading_components(stub), **status_components(stub), **diagnostic_components(stub),
+             **control_components(stub)}
     topics = [availability_topic(key)]
     for cfg in comps.values():
         topics += [cfg[f] for f in ("state_topic", "json_attributes_topic") if f in cfg]
