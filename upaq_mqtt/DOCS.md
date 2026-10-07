@@ -49,7 +49,7 @@ Per sensor, named after the sensor in Protect:
 | Vape Sensitivity | Only with `enable_controls`: Protect's vape sensitivity in % |
 | *Reading* Low / High Threshold | Only with `enable_controls`, for every reading the sensor offers alert thresholds for; disabled by default, enable the ones you need. Their ranges are the measurement ranges of Ubiquiti's data sheet; TVOC is not in it and gets a wide range |
 
-A sensor's entities turn unavailable when it disconnects from Protect, when Protect is out of reach, or when the bridge stops. Readings are retained, so they are back right after a restart of Home Assistant.
+A sensor's entities turn unavailable when it disconnects from Protect, when Protect is out of reach, or when the bridge stops. A reading you switch off under *Events to Capture* in Protect turns unknown, and so do its *Outside Safe Zone* and, for vape, *Vape Detected*; switched on again, the value is back at once. Readings are retained, so they are back right after a restart of Home Assistant.
 
 ## Example automation
 

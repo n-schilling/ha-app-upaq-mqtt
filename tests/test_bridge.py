@@ -304,3 +304,31 @@ async def test_event_switch_and_vape_sensitivity_commands(make):
         (ID, {"airQualitySettings": {"vapeSensitivitySettings": {"sensitivity": 70}}}),
     ]
     assert mqtt.last(f"{BASE}/events/co2/state") == "OFF"
+
+
+# --- Readings switched off in Protect -------------------------------------------
+
+async def test_switched_off_reading_turns_unknown_at_once(make):
+    bridge, mqtt, _, boot = make(min_interval=3600)
+    await bridge.setup(boot)
+    # What Protect sends after unticking CO2 under Events to Capture
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": None, "status": "unknown"}}}))
+    assert mqtt.last(f"{BASE}/co2") == "None"
+    assert json.loads(mqtt.last(f"{BASE}/co2/attributes")) == {"status": "unknown"}
+    assert mqtt.last(f"{BASE}/co2/outside_safe_zone") == "None"
+
+
+async def test_switched_on_again_the_value_returns(make):
+    bridge, mqtt, _, boot = make(min_interval=0)
+    await bridge.setup(boot)
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": None, "status": "unknown"}}}))
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": 900, "status": "neutral"}}}))
+    assert mqtt.last(f"{BASE}/co2") == "900"
+    assert mqtt.last(f"{BASE}/co2/outside_safe_zone") == "OFF"
+
+
+async def test_switched_off_vape_is_unknown_not_detected(make):
+    bridge, mqtt, _, boot = make(devices=[vape_sensor()])
+    await bridge.setup(boot)
+    await bridge.handle_packet(update({"airQuality": {"vape": {"value": None, "status": "unknown"}}}))
+    assert mqtt.last(f"{BASE}/vape_detected") == "None"

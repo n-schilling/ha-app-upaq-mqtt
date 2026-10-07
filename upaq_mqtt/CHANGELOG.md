@@ -2,7 +2,14 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.3.0] - 2026-10-07
+## [2.3.1] - 2026-10-07
+
+### Fixed
+
+- A reading switched off under *Events to Capture* turns unknown at once; before, it kept its last value. Its *Outside Safe Zone* turns unknown as well
+- *Vape Detected* turns unknown, not on, while vape is switched off in Protect
+
+## 2.3.0 - 2026-10-07
 
 ### Added
 
@@ -89,4 +96,4 @@ A bridge of its own replaces the UPAQ-MQTT bridge. Entity IDs, unique IDs and hi
 
 - First version in this repository
 
-[2.3.0]: https://github.com/n-schilling/ha-app-upaq-mqtt/releases/tag/v2.3.0
+[2.3.1]: https://github.com/n-schilling/ha-app-upaq-mqtt/releases/tag/v2.3.1

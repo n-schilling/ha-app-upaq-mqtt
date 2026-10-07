@@ -31,6 +31,8 @@ Publish = Callable[[str, str, bool], Awaitable[None]]
 # Reads the retained messages on topic filters: topic -> payload
 Retained = Callable[[list[str]], Awaitable[dict[str, str]]]
 MIGRATE = json.dumps({"migrate_discovery": True})
+# The MQTT payload Home Assistant shows as unknown
+UNKNOWN = "None"
 
 
 class Resync(Exception):
@@ -227,6 +229,11 @@ class Bridge:
                 full = device["airQuality"].get(metric) or {}
                 if full.get("value") is not None:
                     await self._reading(f"{base}/{metric}", payload(full["value"]), now)
+                elif "value" in entry:
+                    # Switched off under Events to Capture: Protect sends no
+                    # value any more. Unknown at once, not the last value.
+                    self._pending.pop(f"{base}/{metric}", None)
+                    await self._changed(f"{base}/{metric}", UNKNOWN)
                 if full.get("status") is not None:
                     await self._changed(f"{base}/{metric}/attributes",
                                         json.dumps({"status": full["status"]}))
@@ -246,16 +253,21 @@ class Bridge:
         readings = device.get("airQuality") or {}
         vape = readings.get("vape")
         if isinstance(vape, dict) and vape.get("status") is not None:
-            # Protect rates the vape index "safe" until it detects vaping
-            await self._changed(f"{base}/vape_detected", "OFF" if vape["status"] == "safe" else "ON")
+            # Protect rates the vape index "safe" until it detects vaping, and
+            # "unknown" while the reading is switched off
+            status = vape["status"]
+            state = "OFF" if status == "safe" else UNKNOWN if status == "unknown" or vape.get("value") is None else "ON"
+            await self._changed(f"{base}/vape_detected", state)
         for metric in d.threshold_metrics(device):
             zone = d.safe_zone(device, metric)
             entry = readings.get(metric)
-            if not zone or not isinstance(entry, dict) or not isinstance(entry.get("value"), (int, float)):
+            if not zone or not isinstance(entry, dict):
                 continue
             await self._changed(f"{base}/{metric}/safe_zone", json.dumps({"low": zone[0], "high": zone[1]}))
-            await self._changed(f"{base}/{metric}/outside_safe_zone",
-                                "ON" if d.outside_safe_zone(entry["value"], zone) else "OFF")
+            value = entry.get("value")
+            state = UNKNOWN if not isinstance(value, (int, float)) else (
+                "ON" if d.outside_safe_zone(value, zone) else "OFF")
+            await self._changed(f"{base}/{metric}/outside_safe_zone", state)
 
     async def _firmware(self, key: str) -> None:
         device = self.sensors[key]
