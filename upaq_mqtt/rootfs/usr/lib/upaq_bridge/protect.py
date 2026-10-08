@@ -167,29 +167,14 @@ class Protect:
         self._username = username
         self._password = password
         self.check = check
-        # A fingerprint from the options is fixed; otherwise pin mode keeps the
-        # one seen first in the store
+        # A fingerprint from the options wins; otherwise pin mode keeps the one
+        # seen first in the store
         self.manual_fingerprint = fingerprint
         self._store = store
         self.pinned = fingerprint or (store.load() if store and check == "pin" else None)
         self._ssl = ssl_check(check, self.pinned or "")
         self._csrf: str | None = None
         self._warned = False
-
-    @property
-    def can_accept(self) -> bool:
-        """A changed certificate can be accepted from Home Assistant."""
-        return self.check == "pin" and not self.manual_fingerprint and self._store is not None
-
-    def accept(self, fingerprint: str) -> None:
-        """Pins fingerprint from now on (a new certificate of the console)."""
-        if not self.can_accept:
-            raise ProtectError("the fingerprint is set in the options; change it there")
-        assert self._store is not None
-        self._store.save(fingerprint)
-        self.pinned = fingerprint
-        self._ssl = ssl_check(self.check, fingerprint)
-        LOGGER.info("Pinned the console's certificate %s", fingerprint)
 
     async def _pin_first_use(self) -> None:
         """pin without a fingerprint yet: trust the certificate seen now."""
@@ -229,6 +214,10 @@ class Protect:
             raise self._certificate_error(err) or ProtectError(f"console not reachable: {err}") from err
         if not any(cookie.key == "TOKEN" for cookie in self._session.cookie_jar):
             raise AuthError("login answered without a session cookie")
+        # A fingerprint set in the options becomes the stored pin, so clearing
+        # the option later keeps trusting it rather than the one it replaced
+        if self.manual_fingerprint and self._store and self._store.load() != self.manual_fingerprint:
+            self._store.save(self.manual_fingerprint)
         if self.check == "accept_any" and not self._warned:
             self._warned = True
             LOGGER.warning("The console's certificate is not checked (certificate_check accept_any); "

@@ -15,7 +15,7 @@ import aiomqtt
 from . import config as cfg_module
 from . import discovery as d
 from .bridge import BACKOFF, Bridge
-from .protect import PinStore, Protect
+from .protect import CertificateMismatch, PinStore, Protect
 
 LOGGER = logging.getLogger("upaq_bridge")
 STORE = Path("/data/sensors.json")
@@ -99,8 +99,6 @@ class Router:
             await self._mqtt.subscribe("up_airquality/+/+/set", qos=1)
             await self._mqtt.subscribe("up_airquality/+/thresh/+/+/set", qos=1)
             await self._mqtt.subscribe("up_airquality/+/events/+/set", qos=1)
-        if bridge.can_accept:
-            await self._mqtt.subscribe(d.ACCEPT_CERTIFICATE, qos=1)
         async for message in self._mqtt.messages:
             topic = str(message.topic)
             raw = message.payload.decode(errors="replace") if isinstance(message.payload, bytes) \
@@ -108,9 +106,6 @@ class Router:
             if topic.endswith("/config"):
                 if self._collect is not None and message.retain:
                     self._collect[topic] = raw
-            elif topic == d.ACCEPT_CERTIFICATE:
-                if bridge.can_accept and raw == "PRESS":
-                    await bridge.accept_certificate()
             elif controls and topic.endswith("/set"):
                 await bridge.handle_command(topic, raw)
 
@@ -137,7 +132,11 @@ def main() -> None:
             LOGGER.info("Stopped")
 
     LOGGER.info("UP-AirQuality MQTT Bridge %s", os.environ.get("APP_VERSION", ""))
-    asyncio.run(main_task())
+    try:
+        asyncio.run(main_task())
+    except* CertificateMismatch:
+        # Logged with both fingerprints; an admin sets certificate_fingerprint
+        sys.exit(1)
 
 
 if __name__ == "__main__":

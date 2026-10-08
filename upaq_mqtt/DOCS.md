@@ -37,7 +37,11 @@ UniFi consoles use a self-signed certificate. The connection is always encrypted
 
 With `pin` the bridge keeps the fingerprint in its private data and writes it to the log. To pin a known fingerprint from the start, set `certificate_fingerprint`; a fingerprint set there is always the one pinned, whatever `certificate_check` says.
 
-**When the console gets a new certificate** (rare; e.g. after a reset or a new domain), the bridge stops reading Protect, the sensors turn unavailable, and the bridge device *UP-AirQuality MQTT Bridge* shows *Certificate changed* with the pinned and the presented fingerprint as attributes. Check that the change is expected, e.g. in your browser on the console's page, then press **Accept new certificate** on that device; the bridge connects again at once. With a fingerprint set in the options there is no button; set the new fingerprint there.
+**When the console gets a new certificate** (rare; e.g. after a reset or a new domain), the app stops without sending the password, and its log says:
+
+> Certificate mismatch, configured fingerprint: EA:37:… found fingerprint: 5C:90:…
+
+Check that the change is expected, e.g. in your browser on the console's page, then copy the found fingerprint into `certificate_fingerprint` and start the app. Only admins can change the app's options, so nobody else can make the bridge trust another certificate.
 
 `verify_ssl` of versions before 2.4.0 is still understood: `true` means `public_ca`.
 
@@ -56,7 +60,15 @@ Per sensor, named after the sensor in Protect:
 | *Reading* Outside Safe Zone | Only for readings with a safe zone set in Protect (*Add Safe Zone* under *Events to Capture*); on while the reading is below or above it, at once and regardless of `min_interval`. The attributes hold the zone. Read access is enough, so the zones you keep in UniFi drive your automations |
 | Firmware Version | Installed firmware (diagnostic) |
 
-With `certificate_check` `pin` there is also the bridge's own device *UP-AirQuality MQTT Bridge* with *Certificate changed* and *Accept new certificate* (see above).
+The bridge's own device *UP-AirQuality MQTT Bridge* has *Protect connection*: on while the bridge is logged in to Protect and follows its updates, off while it cannot reach Protect, unavailable while the app is stopped. An automation can warn you, e.g. when it has not been on for ten minutes:
+
+```yaml
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.up_airquality_mqtt_bridge_protect_connection
+    not_to: "on"
+    for: "00:10:00"
+```
 | Firmware Update Available | On when Protect offers newer firmware (diagnostic) |
 | LED Brightness, LED Metric, Status Light, Night Mode, Night Mode Brightness | Only with `enable_controls` |
 | *Reading* Events | Only with `enable_controls`: the *Events to Capture* switch of a reading in Protect |
@@ -113,7 +125,7 @@ The entity IDs follow the sensor names in Protect; adjust them to yours.
 ## Troubleshooting
 
 - **"login refused"**: user or password is wrong, or the user is not a local user. Cloud (UI account) users with two-factor authentication cannot log in.
-- **"presented another certificate than the pinned one"**: see *When the console gets a new certificate* above.
+- **"Certificate mismatch"**: see *When the console gets a new certificate* above.
 - **"no trusted CA vouches for the console's certificate"**: `public_ca` needs a certificate from a public CA; choose `pin` for the console's own certificate.
 - **"public_ca needs protect_host to be the name"**: a certificate names the console, not its IP address; enter the name or choose `pin`.
 - **No entities**: the log lists the sensors found at every start. Check that the MQTT integration is set up and uses the discovery prefix of the app.

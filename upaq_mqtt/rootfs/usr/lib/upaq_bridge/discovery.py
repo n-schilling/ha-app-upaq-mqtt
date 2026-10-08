@@ -11,10 +11,8 @@ from dataclasses import dataclass
 from typing import Any
 
 BRIDGE_AVAILABILITY = "up_airquality/bridge/availability"
-# The bridge's own device: the console's certificate (pin mode only)
-CERTIFICATE_CHANGED = "up_airquality/bridge/certificate/changed"
-CERTIFICATE_ATTRIBUTES = "up_airquality/bridge/certificate/attributes"
-ACCEPT_CERTIFICATE = "up_airquality/bridge/certificate/accept"
+# The bridge's own device: is it connected to the Protect API
+PROTECT_CONNECTED = "up_airquality/bridge/protect"
 SUPPORT_URL = "https://github.com/n-schilling/ha-app-upaq-mqtt"
 
 
@@ -312,30 +310,22 @@ def bridge_topic(prefix: str) -> str:
     return f"{prefix}/device/up_airquality_bridge/config"
 
 
-def bridge_payload(ctx: Context, can_accept: bool) -> dict[str, Any]:
-    """The bridge's own device with the certificate entities; the button only
-    when a changed certificate can be accepted from Home Assistant."""
+def bridge_payload(ctx: Context) -> dict[str, Any]:
+    """The bridge's own device with its Protect connection sensor."""
     device: dict[str, Any] = {"identifiers": ["up_airquality_bridge"], "name": "UP-AirQuality MQTT Bridge",
                               "manufacturer": "n-schilling", "model": "MQTT bridge", "sw_version": ctx.version}
     if ctx.config_url:
         device["configuration_url"] = ctx.config_url
-    button: dict[str, Any] = {"platform": "button"}
-    if can_accept:
-        button.update(name="Accept new certificate", unique_id="up_aq_bridge_accept_certificate",
-                      command_topic=ACCEPT_CERTIFICATE, payload_press="PRESS",
-                      entity_category="config", icon="mdi:certificate")
     return {
         "device": device,
         "origin": {"name": "UP-AirQuality MQTT Bridge", "sw_version": ctx.version, "support_url": SUPPORT_URL},
         "availability": [{"topic": BRIDGE_AVAILABILITY}],
         "qos": 1,
         "components": {
-            "certificate_changed": {
-                "platform": "binary_sensor", "name": "Certificate changed",
-                "unique_id": "up_aq_bridge_certificate_changed", "device_class": "problem",
-                "entity_category": "diagnostic", "state_topic": CERTIFICATE_CHANGED,
-                "json_attributes_topic": CERTIFICATE_ATTRIBUTES,
+            "protect_connection": {
+                "platform": "binary_sensor", "name": "Protect connection",
+                "unique_id": "up_aq_bridge_protect_connection", "device_class": "connectivity",
+                "entity_category": "diagnostic", "state_topic": PROTECT_CONNECTED,
             },
-            "accept_certificate": button,
         },
     }

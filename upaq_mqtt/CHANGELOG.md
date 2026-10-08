@@ -7,7 +7,8 @@ All notable changes to this app are documented here. The format follows [Keep a 
 ### Added
 
 - Option `certificate_check` with `pin` (default), `accept_any` and `public_ca`. `pin` trusts the console's certificate seen at the first connection and from then on only that one, so the Protect password is protected without copying a fingerprint from the log
-- Bridge device *UP-AirQuality MQTT Bridge* in `pin` mode: *Certificate changed* (problem, with the pinned and the presented fingerprint) and the button *Accept new certificate*, which pins the new certificate and connects again at once
+- On a certificate mismatch the app logs `configured fingerprint: … found fingerprint: …` and stops; an admin copies the found one into `certificate_fingerprint`
+- Bridge device *UP-AirQuality MQTT Bridge* with *Protect connection* (connectivity), for automations that warn when Protect is out of reach
 - Documentation: the three checks side by side, why there is no plain HTTP
 
 ### Changed

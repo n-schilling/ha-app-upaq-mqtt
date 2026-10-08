@@ -12,7 +12,7 @@ from aiohttp import web
 
 from conftest import frame, packet
 from upaq_bridge.protect import (AuthError, CertificateMismatch, CertificateUntrusted, PinStore, Protect,
-                                 ProtectError, decode_update, format_fingerprint, server_fingerprint, ssl_check)
+                                 decode_update, format_fingerprint, server_fingerprint, ssl_check)
 
 ACTION = {"action": "update", "modelKey": "sensor", "id": "s1"}
 
@@ -196,29 +196,25 @@ async def test_pin_trusts_the_first_certificate_and_keeps_it(tls_consoles):
     await again.login()
 
 
-async def test_a_changed_certificate_stops_until_accepted(tls_consoles):
+async def test_a_changed_certificate_is_a_mismatch_with_both_fingerprints(tls_consoles):
     client, store, [(url_a, fp_a), (url_b, fp_b)] = tls_consoles
     await client(url_a).login()
-    changed = client(url_b)          # same console, new certificate
     with pytest.raises(CertificateMismatch) as err:
-        await changed.login()
+        await client(url_b).login()          # same console, new certificate
     assert (err.value.pinned, err.value.presented) == (fp_a, fp_b)
-    assert changed.can_accept
-    changed.accept(fp_b)
-    await changed.login()
+    assert store.load() == fp_a              # nothing pinned on its own
+
+
+async def test_the_fingerprint_from_the_options_wins_and_is_kept(tls_consoles):
+    client, store, [(url_a, fp_a), (url_b, fp_b)] = tls_consoles
+    await client(url_a).login()
+    # The admin copies the found fingerprint into the options
+    await client(url_b, fingerprint=fp_b).login()
     assert store.load() == fp_b
-
-
-async def test_a_fingerprint_from_the_options_is_fixed(tls_consoles, tmp_path):
-    client, store, [(url_a, fp_a), (url_b, _)] = tls_consoles
-    protect = client(url_a, fingerprint=fp_a)
-    await protect.login()
-    assert store.load() is None            # nothing stored, the option rules
-    assert not protect.can_accept
-    with pytest.raises(ProtectError, match="options"):
-        protect.accept("AB:" * 31 + "CD")
+    # Cleared again later, the stored pin is the new one
+    await client(url_b).login()
     with pytest.raises(CertificateMismatch):
-        await client(url_b, fingerprint=fp_a).login()
+        await client(url_a, fingerprint=fp_b).login()
 
 
 async def test_accept_any_takes_a_self_signed_certificate(tls_consoles):
