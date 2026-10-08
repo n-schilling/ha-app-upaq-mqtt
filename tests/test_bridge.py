@@ -7,7 +7,7 @@ import pytest
 
 from conftest import KEY, FakeProtect, Recorder, packet, sensor
 from upaq_bridge.bridge import Bridge, Resync
-from upaq_bridge.protect import ProtectError
+from upaq_bridge.protect import CertificateMismatch, ProtectError
 
 BASE = f"up_airquality/{KEY}"
 ID = "5f0c1e2d3a4b5c6d7e8f9a0b"
@@ -332,3 +332,104 @@ async def test_switched_off_vape_is_unknown_not_detected(make):
     await bridge.setup(boot)
     await bridge.handle_packet(update({"airQuality": {"vape": {"value": None, "status": "unknown"}}}))
     assert mqtt.last(f"{BASE}/vape_detected") == "None"
+
+
+# --- The console's certificate ---------------------------------------------------
+
+BRIDGE_DEVICE = "homeassistant/device/up_airquality_bridge/config"
+PINNED, PRESENTED = "AA:" * 31 + "AA", "BB:" * 31 + "BB"
+
+
+class CertProtect(FakeProtect):
+    """Fails the first login with a changed certificate; logins after
+    accepting it succeed and the update stream then stays open."""
+
+    def __init__(self, check="pin", manual=""):
+        super().__init__()
+        self.check, self.manual_fingerprint, self.pinned = check, manual, manual or PINNED
+        self.logins = 0
+        self._mismatch = CertificateMismatch(PINNED, PRESENTED)
+        self.connected = asyncio.Event()
+
+    @property
+    def can_accept(self):
+        return self.check == "pin" and not self.manual_fingerprint
+
+    def accept(self, fingerprint):
+        self.pinned = fingerprint
+
+    async def login(self):
+        self.logins += 1
+        if self.pinned != PRESENTED:
+            raise self._mismatch
+
+    async def bootstrap(self):
+        return {"sensors": [sensor()], "lastUpdateId": "u1"}
+
+    async def updates(self, _last):
+        self.connected.set()
+        await asyncio.Event().wait()
+        yield b""
+
+
+def cert_bridge(ctx, tmp_path, protect):
+    mqtt = Recorder()
+
+    async def retained(_filters):
+        return {}
+
+    return Bridge(mqtt, protect, ctx, controls=False, min_interval=0, store=tmp_path / "sensors.json",
+                  retained=retained, migrate_wait=0), mqtt
+
+
+async def test_pin_mode_announces_the_bridge_with_the_accept_button(ctx, tmp_path):
+    bridge, mqtt = cert_bridge(ctx, tmp_path, CertProtect())
+    await bridge.announce_bridge()
+    comps = components(mqtt, BRIDGE_DEVICE)
+    assert comps["certificate_changed"]["device_class"] == "problem"
+    assert comps["accept_certificate"]["command_topic"] == "up_airquality/bridge/certificate/accept"
+    assert mqtt.last("up_airquality/bridge/certificate/changed") == "OFF"
+    assert json.loads(mqtt.last("up_airquality/bridge/certificate/attributes"))["pinned"] == PINNED
+
+
+async def test_a_fingerprint_from_the_options_has_no_accept_button(ctx, tmp_path):
+    bridge, mqtt = cert_bridge(ctx, tmp_path, CertProtect(manual=PINNED))
+    await bridge.announce_bridge()
+    assert components(mqtt, BRIDGE_DEVICE)["accept_certificate"] == {"platform": "button"}
+
+
+async def test_without_pinning_the_bridge_device_is_removed(ctx, tmp_path):
+    bridge, mqtt = cert_bridge(ctx, tmp_path, CertProtect(check="accept_any"))
+    await bridge.announce_bridge()
+    assert mqtt.last(BRIDGE_DEVICE) == ""
+    assert mqtt.last("up_airquality/bridge/certificate/changed") is None
+
+
+async def test_accepting_a_changed_certificate_connects_again_at_once(ctx, tmp_path):
+    protect = CertProtect()
+    bridge, mqtt = cert_bridge(ctx, tmp_path, protect)
+    task = asyncio.create_task(bridge.follow_protect())
+    try:
+        for _ in range(100):
+            if mqtt.last("up_airquality/bridge/certificate/changed") == "ON":
+                break
+            await asyncio.sleep(0.01)
+        assert mqtt.last("up_airquality/bridge/certificate/changed") == "ON"
+        assert json.loads(mqtt.last("up_airquality/bridge/certificate/attributes"))["presented"] == PRESENTED
+        await bridge.accept_certificate()
+        # The backoff after a mismatch is minutes; accepting must not wait for it
+        async with asyncio.timeout(2):
+            await protect.connected.wait()
+        assert protect.logins == 2
+        assert mqtt.last("up_airquality/bridge/certificate/changed") == "OFF"
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+async def test_accept_without_a_changed_certificate_does_nothing(ctx, tmp_path):
+    protect = CertProtect()
+    bridge, _mqtt = cert_bridge(ctx, tmp_path, protect)
+    await bridge.accept_certificate()
+    assert protect.pinned == PINNED

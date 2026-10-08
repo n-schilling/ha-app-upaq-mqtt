@@ -14,24 +14,36 @@ The bridge keeps one connection to Protect open and receives every change as it 
 
 | Option | Default | Meaning |
 |---|---|---|
-| `protect_host` | | Host name or IP address of the console running Protect |
+| `protect_host` | | Host name or IP address of the console running Protect, e.g. `192.168.1.1`; `https://192.168.1.1/` or `192.168.1.1:8443` work too |
 | `protect_username` | | Local Protect user |
 | `protect_password` | | Its password |
-| `certificate_fingerprint` | | SHA-256 fingerprint of the console's certificate (see below) |
-| `verify_ssl` | `false` | Check the certificate against the trusted CAs instead; only for a console with a certificate from a public CA |
+| `certificate_check` | `pin` | How the console's certificate is checked: `pin`, `accept_any` or `public_ca` (see below) |
+| `certificate_fingerprint` | | Optional: the SHA-256 fingerprint to pin, instead of the one seen first |
 | `enable_controls` | `false` | Create LED and threshold controls; the Protect user then needs write access |
 | `min_interval` | `60` | Seconds between two published values of one reading; `0` publishes every change |
 | `discovery_prefix` | `homeassistant` | MQTT discovery prefix |
 | `mqtt_host`, `mqtt_port`, `mqtt_username`, `mqtt_password` | | Only for a broker the Supervisor does not know; shown with *Show unused optional configuration options* |
 | `log_level` | `info` | How much the app writes to its log: `info`, `warning` or `error` |
 
-### Pinning the console's certificate
+### The console's certificate
 
-UniFi consoles use a self-signed certificate, which a CA check rejects. Without `certificate_fingerprint` the connection is encrypted, but the bridge cannot tell the console from someone pretending to be it, who would then receive the Protect password. While the fingerprint is not set, the log shows the console's at every start:
+UniFi consoles use a self-signed certificate. The connection is always encrypted; `certificate_check` decides how the bridge makes sure it talks to your console and not to someone in between, who would then receive the Protect password.
 
-> The console's certificate is not checked. Set certificate_fingerprint to 3A:1F:…
+| `certificate_check` | Accepts | Protects the password against a man in the middle |
+|---|---|---|
+| `pin` (default) | The certificate seen at the first connection, and from then on only that one | Yes, from the first connection on |
+| `accept_any` | Any certificate, also self-signed or expired | No |
+| `public_ca` | A certificate from a public CA (e.g. Let's Encrypt) for the name in `protect_host`; not with an IP address | Yes |
 
-Copy it into `certificate_fingerprint`. When the console gets a new certificate, the bridge stops with a mismatch error; check that the change is expected and set the new fingerprint.
+With `pin` the bridge keeps the fingerprint in its private data and writes it to the log. To pin a known fingerprint from the start, set `certificate_fingerprint`; a fingerprint set there is always the one pinned, whatever `certificate_check` says.
+
+**When the console gets a new certificate** (rare; e.g. after a reset or a new domain), the bridge stops reading Protect, the sensors turn unavailable, and the bridge device *UP-AirQuality MQTT Bridge* shows *Certificate changed* with the pinned and the presented fingerprint as attributes. Check that the change is expected, e.g. in your browser on the console's page, then press **Accept new certificate** on that device; the bridge connects again at once. With a fingerprint set in the options there is no button; set the new fingerprint there.
+
+`verify_ssl` of versions before 2.4.0 is still understood: `true` means `public_ca`.
+
+### Why not plain HTTP
+
+UniFi consoles answer plain HTTP only with a redirect to HTTPS, for the login and the Protect API alike, so the bridge always uses HTTPS. Without it the Protect password would cross your network in clear text.
 
 ## Entities
 
@@ -43,6 +55,8 @@ Per sensor, named after the sensor in Protect:
 | Vape Detected | On when Protect rates the vape index anything but `safe` |
 | *Reading* Outside Safe Zone | Only for readings with a safe zone set in Protect (*Add Safe Zone* under *Events to Capture*); on while the reading is below or above it, at once and regardless of `min_interval`. The attributes hold the zone. Read access is enough, so the zones you keep in UniFi drive your automations |
 | Firmware Version | Installed firmware (diagnostic) |
+
+With `certificate_check` `pin` there is also the bridge's own device *UP-AirQuality MQTT Bridge* with *Certificate changed* and *Accept new certificate* (see above).
 | Firmware Update Available | On when Protect offers newer firmware (diagnostic) |
 | LED Brightness, LED Metric, Status Light, Night Mode, Night Mode Brightness | Only with `enable_controls` |
 | *Reading* Events | Only with `enable_controls`: the *Events to Capture* switch of a reading in Protect |
@@ -99,7 +113,9 @@ The entity IDs follow the sensor names in Protect; adjust them to yours.
 ## Troubleshooting
 
 - **"login refused"**: user or password is wrong, or the user is not a local user. Cloud (UI account) users with two-factor authentication cannot log in.
-- **"certificate does not match"**: the console presented another certificate than the pinned one. If you renewed it, set the new fingerprint from the log; if not, check your network.
+- **"presented another certificate than the pinned one"**: see *When the console gets a new certificate* above.
+- **"no trusted CA vouches for the console's certificate"**: `public_ca` needs a certificate from a public CA; choose `pin` for the console's own certificate.
+- **"public_ca needs protect_host to be the name"**: a certificate names the console, not its IP address; enter the name or choose `pin`.
 - **No entities**: the log lists the sensors found at every start. Check that the MQTT integration is set up and uses the discovery prefix of the app.
 - **Values change only once a minute**: that is `min_interval`; set it lower, at the cost of a bigger recorder database.
 - **Controls do nothing**: the Protect user needs write access; the log shows each change and any error.

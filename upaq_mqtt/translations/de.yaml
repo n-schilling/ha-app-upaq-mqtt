@@ -1,18 +1,21 @@
 configuration:
   protect_host:
     name: Protect-Host
-    description: Hostname oder IP-Adresse der UniFi-Konsole mit Protect.
+    description: Hostname oder IP-Adresse der UniFi-Konsole mit Protect, z. B. 192.168.1.1; eine URL wie https://192.168.1.1/ geht auch.
   protect_username:
     name: Protect-Benutzer
     description: Lokaler Protect-Benutzer. Nur-Lesen genügt, solange die Steuerung aus ist.
   protect_password:
     name: Protect-Passwort
+  certificate_check:
+    name: Zertifikatsprüfung
+    description: "pin: dem zuerst gesehenen Zertifikat der Konsole vertrauen und nur diesem (empfohlen). accept_any: jedes Zertifikat, auch selbst signierte; verschlüsselt, aber das Passwort ist nicht vor einem Angreifer dazwischen geschützt. public_ca: Zertifikat einer öffentlichen CA, für eine Konsole, die über ihren Namen erreicht wird."
   verify_ssl:
-    name: Zertifikat prüfen
-    description: Prüft das Zertifikat der Konsole gegen vertrauenswürdige CAs; die meisten Konsolen haben ein selbstsigniertes, dann besser den Fingerabdruck nutzen.
+    name: Zertifikat prüfen (vor 2.4.0)
+    description: Ersetzt durch certificate_check; true bedeutet weiterhin public_ca.
   certificate_fingerprint:
     name: Zertifikats-Fingerabdruck
-    description: SHA-256-Fingerabdruck des Konsolen-Zertifikats; das Log zeigt ihn, solange er fehlt. Schützt das Passwort vor einem Angreifer dazwischen.
+    description: Optional. SHA-256-Fingerabdruck, der statt des zuerst gesehenen festgelegt wird; gesetzt, wird immer er festgelegt.
   enable_controls:
     name: Steuerung aktivieren
     description: Legt LED- und Schwellwert-Steuerungen in Home Assistant an; der Protect-Benutzer braucht dann Schreibrechte.

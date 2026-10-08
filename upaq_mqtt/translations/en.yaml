@@ -1,18 +1,21 @@
 configuration:
   protect_host:
     name: Protect host
-    description: Host name or IP address of the UniFi console running Protect.
+    description: Host name or IP address of the UniFi console running Protect, e.g. 192.168.1.1; a URL such as https://192.168.1.1/ works too.
   protect_username:
     name: Protect user
     description: Local Protect user. A view-only user is enough unless controls are enabled.
   protect_password:
     name: Protect password
+  certificate_check:
+    name: Certificate check
+    description: "pin: trust the console's certificate seen first and only that one (recommended). accept_any: any certificate, also self-signed; encrypted, but the password is not protected against a man in the middle. public_ca: a certificate from a public CA, for a console reached by its name."
   verify_ssl:
-    name: Verify certificate
-    description: Check the console's certificate against the trusted CAs; most consoles use a self-signed one, so use the fingerprint instead.
+    name: Verify certificate (before 2.4.0)
+    description: Replaced by certificate_check; true still means public_ca.
   certificate_fingerprint:
     name: Certificate fingerprint
-    description: SHA-256 fingerprint of the console's certificate; the log shows it while it is not set. Protects the password against a man in the middle.
+    description: Optional. SHA-256 fingerprint to pin instead of the one seen first; set, it always pins it.
   enable_controls:
     name: Enable controls
     description: Create LED and threshold controls in Home Assistant; the Protect user then needs write access.

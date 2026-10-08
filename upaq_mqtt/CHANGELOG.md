@@ -2,7 +2,26 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.3.1] - 2026-10-07
+## [2.4.0] - 2026-10-08
+
+### Added
+
+- Option `certificate_check` with `pin` (default), `accept_any` and `public_ca`. `pin` trusts the console's certificate seen at the first connection and from then on only that one, so the Protect password is protected without copying a fingerprint from the log
+- Bridge device *UP-AirQuality MQTT Bridge* in `pin` mode: *Certificate changed* (problem, with the pinned and the presented fingerprint) and the button *Accept new certificate*, which pins the new certificate and connects again at once
+- Documentation: the three checks side by side, why there is no plain HTTP
+
+### Changed
+
+- `protect_host` takes what people type: a name, an IP address, a URL with scheme and path, a port, IPv6; before, `https://…` made the bridge build a broken address
+- Without a fingerprint set, existing installations now pin the console's certificate at the first start of 2.4.0 instead of accepting any; choose `accept_any` to keep the old behaviour
+- `certificate_fingerprint` is optional and pins its fingerprint whatever `certificate_check` says
+- `verify_ssl` is replaced by `certificate_check`; `true` still means `public_ca`
+
+### Fixed
+
+- `public_ca` with an IP address and a certificate no public CA vouches for end in a message that says what to change instead of a TLS error
+
+## 2.3.1 - 2026-10-07
 
 ### Fixed
 
@@ -96,4 +115,4 @@ A bridge of its own replaces the UPAQ-MQTT bridge. Entity IDs, unique IDs and hi
 
 - First version in this repository
 
-[2.3.1]: https://github.com/n-schilling/ha-app-upaq-mqtt/releases/tag/v2.3.1
+[2.4.0]: https://github.com/n-schilling/ha-app-upaq-mqtt/releases/tag/v2.4.0

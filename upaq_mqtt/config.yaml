@@ -1,5 +1,5 @@
 name: UP-AirQuality MQTT Bridge
-version: "2.3.1"
+version: "2.4.0"
 slug: upaq_mqtt
 description: Brings UniFi Protect UP-AirQuality sensors into Home Assistant via MQTT discovery
 url: https://github.com/n-schilling/ha-app-upaq-mqtt
@@ -13,7 +13,7 @@ options:
   protect_host: ""
   protect_username: ""
   protect_password: ""
-  verify_ssl: false
+  certificate_check: pin
   certificate_fingerprint: ""
   enable_controls: false
   min_interval: 60
@@ -23,7 +23,8 @@ schema:
   protect_host: str
   protect_username: str
   protect_password: password
-  verify_ssl: bool
+  certificate_check: list(pin|accept_any|public_ca)
+  verify_ssl: bool?
   certificate_fingerprint: match(^(([0-9A-Fa-f]{2}:?){31}[0-9A-Fa-f]{2})?$)?
   enable_controls: bool
   min_interval: int(0,3600)

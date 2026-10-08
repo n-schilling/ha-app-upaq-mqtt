@@ -18,6 +18,8 @@ import ssl
 import struct
 import zlib
 from collections.abc import AsyncIterator, Container
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -38,6 +40,40 @@ class ProtectError(Exception):
 
 class AuthError(ProtectError):
     """Protect refused the login."""
+
+
+class CertificateMismatch(AuthError):
+    """The console presented another certificate than the pinned one."""
+
+    def __init__(self, pinned: str, presented: str) -> None:
+        super().__init__(f"the console presented another certificate ({presented}) than the "
+                         f"pinned one ({pinned})")
+        self.pinned = pinned
+        self.presented = presented
+
+
+class CertificateUntrusted(AuthError):
+    """public_ca: no trusted CA vouches for the console's certificate."""
+
+
+class PinStore:
+    """The fingerprint pinned on first use, kept in the app's private data."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def load(self) -> str | None:
+        try:
+            value = json.loads(self._path.read_text()).get("fingerprint")
+        except (OSError, ValueError, AttributeError):
+            return None
+        return value if isinstance(value, str) and value else None
+
+    def save(self, fingerprint: str) -> None:
+        tmp = self._path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"fingerprint": fingerprint,
+                                   "pinned_at": datetime.now(UTC).isoformat(timespec="seconds")}))
+        tmp.replace(self._path)
 
 
 def _frame(data: bytes, offset: int) -> tuple[bytes, int, int]:
@@ -80,17 +116,17 @@ def decode_update(data: bytes, model_key: str, ids: Container[str]) -> tuple[dic
     return action, changes if isinstance(changes, dict) else {}
 
 
-def ssl_check(verify: bool, fingerprint: str = "") -> ssl.SSLContext | aiohttp.Fingerprint | bool:
+def ssl_check(check: str, fingerprint: str = "") -> ssl.SSLContext | aiohttp.Fingerprint | bool:
     """How the console's certificate is checked.
 
     UniFi consoles mostly use self-signed certificates, which a CA check
     rejects. A pinned SHA-256 fingerprint protects against a man in the middle
-    without a CA; without fingerprint and CA check the connection is encrypted
-    but not authenticated.
+    without a CA; accept_any keeps the connection encrypted but not
+    authenticated.
     """
-    if fingerprint:
+    if check == "pin" and fingerprint:
         return aiohttp.Fingerprint(bytes.fromhex(fingerprint.replace(":", "")))
-    if verify:
+    if check == "public_ca":
         return True
     context = ssl.create_default_context()
     context.check_hostname = False
@@ -98,9 +134,13 @@ def ssl_check(verify: bool, fingerprint: str = "") -> ssl.SSLContext | aiohttp.F
     return context
 
 
+def format_digest(digest: bytes) -> str:
+    text = digest.hex().upper()
+    return ":".join(text[i:i + 2] for i in range(0, len(text), 2))
+
+
 def format_fingerprint(der: bytes) -> str:
-    digest = hashlib.sha256(der).hexdigest().upper()
-    return ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
+    return format_digest(hashlib.sha256(der).digest())
 
 
 async def server_fingerprint(base_url: str) -> str | None:
@@ -119,19 +159,62 @@ class Protect:
     """A logged-in session with the Protect application of a UniFi console."""
 
     def __init__(self, session: aiohttp.ClientSession, host: str, username: str,
-                 password: str, verify_ssl: bool = False, fingerprint: str = "",
-                 *, base_url: str | None = None) -> None:
+                 password: str, check: str = "accept_any", fingerprint: str = "",
+                 store: PinStore | None = None, *, base_url: str | None = None) -> None:
         self._session = session
-        # base_url only for the tests, which run a plain HTTP fake console
+        # base_url only for the tests, which run a fake console
         self._base = base_url or f"https://{host}"
         self._username = username
         self._password = password
-        self._ssl = ssl_check(verify_ssl, fingerprint)
-        self._checked = bool(verify_ssl or fingerprint)
+        self.check = check
+        # A fingerprint from the options is fixed; otherwise pin mode keeps the
+        # one seen first in the store
+        self.manual_fingerprint = fingerprint
+        self._store = store
+        self.pinned = fingerprint or (store.load() if store and check == "pin" else None)
+        self._ssl = ssl_check(check, self.pinned or "")
         self._csrf: str | None = None
         self._warned = False
 
+    @property
+    def can_accept(self) -> bool:
+        """A changed certificate can be accepted from Home Assistant."""
+        return self.check == "pin" and not self.manual_fingerprint and self._store is not None
+
+    def accept(self, fingerprint: str) -> None:
+        """Pins fingerprint from now on (a new certificate of the console)."""
+        if not self.can_accept:
+            raise ProtectError("the fingerprint is set in the options; change it there")
+        assert self._store is not None
+        self._store.save(fingerprint)
+        self.pinned = fingerprint
+        self._ssl = ssl_check(self.check, fingerprint)
+        LOGGER.info("Pinned the console's certificate %s", fingerprint)
+
+    async def _pin_first_use(self) -> None:
+        """pin without a fingerprint yet: trust the certificate seen now."""
+        if self.check != "pin" or self.pinned:
+            return
+        fingerprint = await server_fingerprint(self._base)
+        if not fingerprint:
+            raise ProtectError("could not read the console's certificate to pin it")
+        if self._store:
+            self._store.save(fingerprint)
+        self.pinned = fingerprint
+        self._ssl = ssl_check(self.check, fingerprint)
+        LOGGER.info("Pinned the console's certificate on first use: %s", fingerprint)
+
+    def _certificate_error(self, err: aiohttp.ClientError) -> AuthError | None:
+        if isinstance(err, aiohttp.ServerFingerprintMismatch):
+            return CertificateMismatch(self.pinned or "", format_digest(err.got))
+        if isinstance(err, aiohttp.ClientConnectorCertificateError):
+            return CertificateUntrusted(
+                f"no trusted CA vouches for the console's certificate ({err.certificate_error}); "
+                "certificate_check public_ca needs one, e.g. from Let's Encrypt; choose pin otherwise")
+        return None
+
     async def login(self) -> None:
+        await self._pin_first_use()
         body = {"username": self._username, "password": self._password, "rememberMe": True}
         try:
             async with self._session.post(f"{self._base}/api/auth/login", json=body,
@@ -142,17 +225,15 @@ class Protect:
                     raise ProtectError(f"login failed with HTTP {resp.status}")
                 self._csrf = resp.headers.get("X-CSRF-Token") or self._csrf
                 await resp.read()
-        except aiohttp.ServerFingerprintMismatch as err:
-            raise AuthError("the console's certificate does not match certificate_fingerprint") from err
         except aiohttp.ClientError as err:
-            raise ProtectError(f"console not reachable: {err}") from err
+            raise self._certificate_error(err) or ProtectError(f"console not reachable: {err}") from err
         if not any(cookie.key == "TOKEN" for cookie in self._session.cookie_jar):
             raise AuthError("login answered without a session cookie")
-        if not self._checked and not self._warned:
+        if self.check == "accept_any" and not self._warned:
             self._warned = True
-            LOGGER.warning("The console's certificate is not checked. Set certificate_fingerprint "
-                           "to %s to pin it", await server_fingerprint(self._base)
-                           or "its SHA-256 fingerprint")
+            LOGGER.warning("The console's certificate is not checked (certificate_check accept_any); "
+                           "pin protects the password: choose it, or set certificate_fingerprint to %s",
+                           await server_fingerprint(self._base) or "its SHA-256 fingerprint")
 
     async def _request(self, method: str, path: str, body: Any = None) -> Any:
         headers = {"X-CSRF-Token": self._csrf} if self._csrf and method != "GET" else None
@@ -167,7 +248,7 @@ class Protect:
                     raise ProtectError(f"{method} {path} failed with HTTP {resp.status}")
                 return await resp.json(content_type=None)
         except aiohttp.ClientError as err:
-            raise ProtectError(f"{method} {path} failed: {err}") from err
+            raise self._certificate_error(err) or ProtectError(f"{method} {path} failed: {err}") from err
 
     async def bootstrap(self) -> dict:
         data = await self._request("GET", "/bootstrap")
@@ -197,4 +278,4 @@ class Protect:
                     elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
                         break
         except aiohttp.ClientError as err:
-            raise ProtectError(f"update stream failed: {err}") from err
+            raise self._certificate_error(err) or ProtectError(f"update stream failed: {err}") from err

@@ -15,10 +15,11 @@ import aiomqtt
 from . import config as cfg_module
 from . import discovery as d
 from .bridge import BACKOFF, Bridge
-from .protect import Protect
+from .protect import PinStore, Protect
 
 LOGGER = logging.getLogger("upaq_bridge")
 STORE = Path("/data/sensors.json")
+PINNED = Path("/data/certificate.json")
 
 
 def last_will() -> aiomqtt.Will:
@@ -35,7 +36,7 @@ async def run(cfg: cfg_module.Config) -> None:
     failures = 0
     async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as http:
         protect = Protect(http, cfg.protect_host, cfg.protect_username, cfg.protect_password,
-                          cfg.verify_ssl, cfg.certificate_fingerprint)
+                          cfg.certificate_check, cfg.certificate_fingerprint, PinStore(PINNED))
         while True:
             try:
                 async with aiomqtt.Client(cfg.mqtt_host, cfg.mqtt_port, username=cfg.mqtt_username,
@@ -53,6 +54,7 @@ async def run(cfg: cfg_module.Config) -> None:
                                     min_interval=cfg.min_interval, store=STORE,
                                     retained=router.retained)
                     await publish(d.BRIDGE_AVAILABILITY, "online", True)
+                    await bridge.announce_bridge()
                     try:
                         async with asyncio.TaskGroup() as tasks:
                             tasks.create_task(router.run(bridge, cfg.enable_controls))
@@ -97,6 +99,8 @@ class Router:
             await self._mqtt.subscribe("up_airquality/+/+/set", qos=1)
             await self._mqtt.subscribe("up_airquality/+/thresh/+/+/set", qos=1)
             await self._mqtt.subscribe("up_airquality/+/events/+/set", qos=1)
+        if bridge.can_accept:
+            await self._mqtt.subscribe(d.ACCEPT_CERTIFICATE, qos=1)
         async for message in self._mqtt.messages:
             topic = str(message.topic)
             raw = message.payload.decode(errors="replace") if isinstance(message.payload, bytes) \
@@ -104,6 +108,9 @@ class Router:
             if topic.endswith("/config"):
                 if self._collect is not None and message.retain:
                     self._collect[topic] = raw
+            elif topic == d.ACCEPT_CERTIFICATE:
+                if bridge.can_accept and raw == "PRESS":
+                    await bridge.accept_certificate()
             elif controls and topic.endswith("/set"):
                 await bridge.handle_command(topic, raw)
 

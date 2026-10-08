@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import discovery as d
-from .protect import AuthError, Protect, ProtectError, decode_update
+from .protect import AuthError, CertificateMismatch, Protect, ProtectError, decode_update
 
 LOGGER = logging.getLogger(__name__)
 
@@ -89,6 +89,8 @@ class Bridge:
         self._pending: dict[str, str] = {}       # reading topic -> held payload
         self._wake = asyncio.Event()
         self._announced: dict[str, dict[str, str]] = {}   # sensor key -> entity -> platform
+        self._retry = asyncio.Event()            # set: connect to Protect again now
+        self._presented: str | None = None       # certificate the console showed instead of the pinned
 
     # --- MQTT ----------------------------------------------------------------
     async def _send(self, topic: str, value: str, retain: bool = True) -> None:
@@ -404,6 +406,41 @@ class Bridge:
                         f"thresh/{metric}/{bound}/state", payload(v))
         raise ValueError("unknown control")
 
+    # --- Certificate -------------------------------------------------------------
+    @property
+    def can_accept(self) -> bool:
+        return bool(getattr(self._protect, "can_accept", False))
+
+    async def announce_bridge(self) -> None:
+        """The bridge's own device in pin mode; removed in the other modes."""
+        topic = d.bridge_topic(self._ctx.prefix)
+        if getattr(self._protect, "check", None) != "pin":
+            await self._send(topic, "")
+            return
+        await self._send(topic, json.dumps(d.bridge_payload(self._ctx, self.can_accept)))
+        await self._certificate_state()
+
+    async def _certificate_state(self) -> None:
+        if getattr(self._protect, "check", None) != "pin":
+            return
+        await self._changed(d.CERTIFICATE_ATTRIBUTES, json.dumps(
+            {"pinned": getattr(self._protect, "pinned", None), "presented": self._presented}))
+        await self._changed(d.CERTIFICATE_CHANGED, "ON" if self._presented else "OFF")
+
+    async def accept_certificate(self) -> None:
+        """The button in Home Assistant: pin the certificate the console showed."""
+        if not self._presented:
+            LOGGER.info("No changed certificate to accept")
+            return
+        try:
+            self._protect.accept(self._presented)
+        except ProtectError as err:
+            LOGGER.error("Could not accept the certificate: %s", err)
+            return
+        self._presented = None
+        await self._certificate_state()
+        self._retry.set()
+
     # --- Protect session ---------------------------------------------------------
     async def follow_protect(self) -> None:
         """Logs in, reads the bootstrap and follows the updates; never returns."""
@@ -414,6 +451,7 @@ class Bridge:
                 await self._protect.login()
                 bootstrap = await self._protect.bootstrap()
                 await self.setup(bootstrap)
+                await self._certificate_state()
                 if not self.sensors:
                     LOGGER.warning("Protect has no UP-AirQuality sensor; checking again later")
                 async with contextlib.aclosing(
@@ -424,6 +462,14 @@ class Bridge:
             except Resync:
                 LOGGER.info("Sensors changed in Protect, reading them again")
                 continue
+            except CertificateMismatch as err:
+                self._presented = err.presented
+                LOGGER.error("Protect: %s. %s", err, "If the console got a new certificate, press "
+                             "Accept new certificate in Home Assistant" if self.can_accept else
+                             "If the console got a new certificate, set certificate_fingerprint to it")
+                await self._certificate_state()
+                await self.offline()
+                failures = len(BACKOFF) - 1
             except AuthError as err:
                 LOGGER.error("Protect: %s", err)
                 await self.offline()
@@ -442,4 +488,7 @@ class Bridge:
             delay = BACKOFF[min(failures, len(BACKOFF) - 1)]
             failures += 1
             LOGGER.info("Connecting to Protect again in %d s", delay)
-            await asyncio.sleep(delay)
+            self._retry.clear()
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(delay):
+                    await self._retry.wait()
