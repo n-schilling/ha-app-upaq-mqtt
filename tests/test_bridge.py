@@ -7,7 +7,7 @@ import pytest
 
 from conftest import KEY, FakeProtect, Recorder, packet, sensor
 from upaq_bridge.bridge import Bridge, Resync
-from upaq_bridge.protect import CertificateMismatch, ProtectError
+from upaq_bridge.protect import AuthError, CertificateMismatch, ProtectError
 
 BASE = f"up_airquality/{KEY}"
 ID = "5f0c1e2d3a4b5c6d7e8f9a0b"
@@ -378,7 +378,8 @@ async def test_the_bridge_device_has_the_protect_connection(ctx, tmp_path):
     comps = components(mqtt, BRIDGE_DEVICE)
     assert list(comps) == ["protect_connection"]
     assert comps["protect_connection"]["device_class"] == "connectivity"
-    assert mqtt.last(CONNECTED) == "OFF"
+    # Starting the app says nothing about Protect
+    assert mqtt.last(CONNECTED) is None
 
 
 async def test_the_connection_is_on_while_following_protect(ctx, tmp_path):
@@ -389,8 +390,6 @@ async def test_the_connection_is_on_while_following_protect(ctx, tmp_path):
         async with asyncio.timeout(2):
             await protect.connected.wait()
         assert mqtt.last(CONNECTED) == "ON"
-        await bridge.offline()
-        assert mqtt.last(CONNECTED) == "OFF"
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -404,5 +403,34 @@ async def test_a_certificate_mismatch_logs_both_fingerprints_and_stops(ctx, tmp_
         async with asyncio.timeout(2):
             await bridge.follow_protect()
     assert f"configured fingerprint: {PINNED} found fingerprint: {FOUND}" in caplog.text
-    assert mqtt.last(CONNECTED) == "OFF"
+    assert mqtt.last(CONNECTED) is None       # Protect answered; it is not out of reach
     assert not protect.connected.is_set()
+
+
+async def follow_until_retry(bridge, mqtt, monkeypatch):
+    """Runs follow_protect until it would wait to connect again."""
+    waited = asyncio.Event()
+
+    async def sleep(_delay):
+        waited.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("upaq_bridge.bridge.asyncio.sleep", sleep)
+    task = asyncio.create_task(bridge.follow_protect())
+    async with asyncio.timeout(2):
+        await waited.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_an_unreachable_protect_turns_the_connection_off(ctx, tmp_path, monkeypatch):
+    bridge, mqtt = session_bridge(ctx, tmp_path, SessionProtect(ProtectError("console not reachable")))
+    await follow_until_retry(bridge, mqtt, monkeypatch)
+    assert mqtt.last(CONNECTED) == "OFF"
+
+
+async def test_a_refused_login_leaves_the_connection_alone(ctx, tmp_path, monkeypatch):
+    bridge, mqtt = session_bridge(ctx, tmp_path, SessionProtect(AuthError("login refused (401)")))
+    await follow_until_retry(bridge, mqtt, monkeypatch)
+    assert mqtt.last(CONNECTED) is None

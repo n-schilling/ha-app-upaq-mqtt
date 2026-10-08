@@ -2,7 +2,13 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.4.0] - 2026-10-08
+## [2.4.1] - 2026-10-08
+
+### Changed
+
+- *Protect connection* turns off only while Protect cannot be reached. Before, every start of the app turned it off for a few seconds until the login, and a refused login or a certificate mismatch turned it off too
+
+## 2.4.0 - 2026-10-08
 
 ### Added
 
@@ -116,4 +122,4 @@ A bridge of its own replaces the UPAQ-MQTT bridge. Entity IDs, unique IDs and hi
 
 - First version in this repository
 
-[2.4.0]: https://github.com/n-schilling/ha-app-upaq-mqtt/releases/tag/v2.4.0
+[2.4.1]: https://github.com/n-schilling/ha-app-upaq-mqtt/releases/tag/v2.4.1

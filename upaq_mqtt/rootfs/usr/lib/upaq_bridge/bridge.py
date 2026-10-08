@@ -323,8 +323,7 @@ class Bridge:
         await self._update(key, changes, asyncio.get_running_loop().time())
 
     async def offline(self) -> None:
-        """Protect is out of reach: the readings are no longer current."""
-        await self._changed(d.PROTECT_CONNECTED, "OFF")
+        """The readings are no longer current."""
         for key in self.sensors:
             await self._changed(d.availability_topic(key), "offline")
 
@@ -407,9 +406,10 @@ class Bridge:
 
     # --- The bridge's own device ------------------------------------------------
     async def announce_bridge(self) -> None:
-        """The bridge's device with the Protect connection sensor."""
+        """The bridge's device with the Protect connection sensor. Its state is
+        only set by what the bridge finds: on when following Protect, off when
+        Protect cannot be reached; starting or stopping the app changes nothing."""
         await self._send(d.bridge_topic(self._ctx.prefix), json.dumps(d.bridge_payload(self._ctx)))
-        await self._changed(d.PROTECT_CONNECTED, "OFF")
 
     # --- Protect session ---------------------------------------------------------
     async def follow_protect(self) -> None:
@@ -446,7 +446,10 @@ class Bridge:
                 await self.offline()
                 failures = len(BACKOFF) - 1   # do not hammer the login
             except ProtectError as err:
+                # Protect cannot be reached (network, HTTP error): the only case
+                # the connection sensor turns off
                 LOGGER.warning("Protect: %s", err)
+                await self._changed(d.PROTECT_CONNECTED, "OFF")
                 await self.offline()
             except (KeyError, TypeError, ValueError, AttributeError):
                 # Data Protect sent in an unexpected shape: start over instead of

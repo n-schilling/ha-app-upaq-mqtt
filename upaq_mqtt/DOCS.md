@@ -60,7 +60,7 @@ Per sensor, named after the sensor in Protect:
 | *Reading* Outside Safe Zone | Only for readings with a safe zone set in Protect (*Add Safe Zone* under *Events to Capture*); on while the reading is below or above it, at once and regardless of `min_interval`. The attributes hold the zone. Read access is enough, so the zones you keep in UniFi drive your automations |
 | Firmware Version | Installed firmware (diagnostic) |
 
-The bridge's own device *UP-AirQuality MQTT Bridge* has *Protect connection*: on while the bridge is logged in to Protect and follows its updates, off while it cannot reach Protect, unavailable while the app is stopped. An automation can warn you, e.g. when it has not been on for ten minutes:
+The bridge's own device *UP-AirQuality MQTT Bridge* has *Protect connection*: on while the bridge is logged in to Protect and follows its updates, off only while Protect cannot be reached (network or HTTP error), unavailable while the app is stopped. Starting or stopping the app, a refused login or a certificate mismatch do not turn it off; Protect answered in those cases, the log says why the bridge does not use it. An automation can warn you, e.g. when it has not been on for ten minutes:
 
 ```yaml
 triggers:
