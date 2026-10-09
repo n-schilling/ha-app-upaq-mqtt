@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.2] - 2026-10-09
+
+### Fixed
+
+- The app no longer crashes and restarts every hour or two. A held reading that changed again while the bridge was sending another one made it stop with a `KeyError`; the *Protect connection* and all sensors went unavailable for about four seconds each time
+
 ## [2.4.1] - 2026-10-08
 
 ### Changed
@@ -122,4 +128,5 @@ A bridge of its own replaces the UPAQ-MQTT bridge. Entity IDs, unique IDs and hi
 
 - First version in this repository
 
+[2.4.2]: https://github.com/n-schilling/ha-app-upaq-mqtt/releases/tag/v2.4.2
 [2.4.1]: https://github.com/n-schilling/ha-app-upaq-mqtt/releases/tag/v2.4.1

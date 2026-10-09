@@ -80,6 +80,36 @@ async def test_throttle_holds_and_sends_the_latest(make):
     flusher.cancel()
 
 
+async def test_a_reading_dropped_while_flushing_does_not_stop_the_loop(make):
+    bridge, mqtt, _, boot = make(min_interval=1)
+    await bridge.setup(boot)
+    flusher = asyncio.create_task(bridge.flush_loop())
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": 660}, "pm2p5": {"value": 5.0}}}))
+    mqtt.clear()
+
+    # The flush of the first held reading waits on the broker ...
+    sending, release = asyncio.Event(), asyncio.Event()
+
+    async def slow(topic, value, retain):
+        await mqtt(topic, value, retain)
+        if not sending.is_set():
+            sending.set()
+            await release.wait()
+    bridge._publish = slow
+    await asyncio.wait_for(sending.wait(), 2)
+
+    # ... while the other one goes back to the value already sent
+    first = mqtt.topics()[0]
+    other = {f"{BASE}/co2": ("pm2p5", 4.59), f"{BASE}/pm2p5": ("co2", 655)}[first]
+    await bridge.handle_packet(update({"airQuality": {other[0]: {"value": other[1]}}}))
+    release.set()
+    await asyncio.sleep(0.1)
+
+    assert not flusher.done()
+    assert mqtt.topics() == [first]
+    flusher.cancel()
+
+
 async def test_status_change_is_sent_at_once(make):
     bridge, mqtt, _, boot = make(min_interval=3600)
     await bridge.setup(boot)

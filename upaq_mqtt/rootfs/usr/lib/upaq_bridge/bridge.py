@@ -123,9 +123,13 @@ class Bridge:
             due = min(self._last[t] + self._min_interval for t in self._pending)
             await asyncio.sleep(max(0.0, due - loop.time()))
             now = loop.time()
-            for topic, value in list(self._pending.items()):
+            for topic in list(self._pending):
                 if now >= self._last[topic] + self._min_interval:
-                    del self._pending[topic]
+                    # Each send yields: a reading that came in meanwhile may
+                    # have replaced or dropped the held value
+                    value = self._pending.pop(topic, None)
+                    if value is None:
+                        continue
                     self._last[topic] = now
                     await self._send(topic, value)
 
