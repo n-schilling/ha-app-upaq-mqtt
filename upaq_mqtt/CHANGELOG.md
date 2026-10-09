@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.4] - 2026-10-09
+
+### Changed
+
+- Base image `base-python` 3.14 on Alpine 3.24 (was Alpine 3.23)
+
 ## [2.4.3] - 2026-10-09
 
 ### Changed
