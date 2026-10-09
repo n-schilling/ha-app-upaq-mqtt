@@ -2,6 +2,13 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.3] - 2026-10-09
+
+### Changed
+
+- The log no longer starts with s6-overlay's warning that user bundles in `s6-rc.d` are deprecated; the service is now registered in `user-bundles.d`
+- s6-overlay logs only warnings and errors, so the start and stop of the app no longer fill the log with `s6-rc: info` lines
+
 ## [2.4.2] - 2026-10-09
 
 ### Fixed
