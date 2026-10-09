@@ -2,7 +2,7 @@
 single entity topics, retained states, commands and the last will.
 
 Needs a broker without authentication, e.g. from tests/mosquitto.conf:
-    docker run -d -p 1883:1883 -v "$PWD/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.1.2
+    docker run -d -p 1883:1883 -v "$PWD/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.1.2-alpine
     MQTT_TEST_HOST=localhost pytest tests/test_broker.py
 """
 

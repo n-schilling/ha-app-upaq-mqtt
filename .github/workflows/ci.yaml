@@ -47,7 +47,7 @@ jobs:
       - name: Start a broker
         run: >-
           docker run -d --name broker -p 1883:1883
-          -v "${PWD}/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.1.2
+          -v "${PWD}/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.1.2-alpine
       - name: Test
         env:
           MQTT_TEST_HOST: localhost
