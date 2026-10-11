@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.5] - 2026-10-11
+
+### Changed
+
+- The base image is set in the Dockerfile only (multi-arch `base-python:3.14-alpine3.24`, unchanged contents); the deprecated `build.yaml` is gone, so the Supervisor no longer warns about it when building the app
+
 ## [2.4.4] - 2026-10-09
 
 ### Changed

@@ -79,9 +79,8 @@ jobs:
           ARCH: ${{ matrix.arch }}
           PLATFORM: ${{ matrix.platform }}
         run: |
-          base=$(yq -r ".build_from.${ARCH}" upaq_mqtt/build.yaml)
           version=$(yq -r '.version' upaq_mqtt/config.yaml)
-          docker buildx build --platform "${PLATFORM}" --build-arg "BUILD_FROM=${base}" \
+          docker buildx build --platform "${PLATFORM}" \
             --build-arg "BUILD_VERSION=${version}" --load -t upaq-mqtt:test upaq_mqtt
       - name: Start without options
         env:
