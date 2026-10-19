@@ -218,6 +218,16 @@ async def test_offline_when_protect_is_gone(make):
     assert mqtt.last(f"{BASE}/availability") == "offline"
 
 
+async def test_offline_before_the_bootstrap_uses_the_sensors_of_last_time(make):
+    # After an MQTT reconnect the bridge starts over; a failing Protect login
+    # must still take the readings held by the broker offline
+    bridge, _, _, boot = make()
+    await bridge.setup(boot)
+    again, mqtt, _, _ = make()
+    await again.offline()
+    assert mqtt.last(f"{BASE}/availability") == "offline"
+
+
 # --- Controls ------------------------------------------------------------------
 
 async def test_controls_publish_settings(make):

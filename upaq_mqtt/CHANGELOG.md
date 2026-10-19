@@ -2,6 +2,13 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.6] - 2026-10-19
+
+### Fixed
+
+- Logging in to Protect again no longer fails with `login refused (403)` while user and password are right. The bridge sent the cookie of its earlier session along, which UniFi OS refuses; this happened whenever the bridge had to log in again without restarting, for example after the MQTT broker restarted, and lasted until the app was restarted
+- When the bridge cannot log in to Protect after reconnecting to the MQTT broker, the sensors now become unavailable. Before, they kept showing their last readings as if they were current
+
 ## [2.4.5] - 2026-10-11
 
 ### Changed

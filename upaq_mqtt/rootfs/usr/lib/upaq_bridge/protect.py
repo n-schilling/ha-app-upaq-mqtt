@@ -201,6 +201,10 @@ class Protect:
     async def login(self) -> None:
         await self._pin_first_use()
         body = {"username": self._username, "password": self._password, "rememberMe": True}
+        # UniFi OS refuses a login carrying an earlier session cookie without
+        # its CSRF token with 403: log in as a new session
+        self._session.cookie_jar.clear()
+        self._csrf = None
         try:
             async with self._session.post(f"{self._base}/api/auth/login", json=body,
                                           ssl=self._ssl, timeout=TIMEOUT) as resp:

@@ -89,6 +89,8 @@ class FakeConsole:
         body = await request.json()
         if body["password"] != "right":
             return web.Response(status=401)
+        if request.cookies.get("TOKEN") and not request.headers.get("X-CSRF-Token"):
+            return web.Response(status=403)   # what UniFi OS does
         self.logins += 1
         resp = web.json_response({})
         resp.set_cookie("TOKEN", f"t{self.logins}")
@@ -140,6 +142,15 @@ async def test_wrong_password_is_an_auth_error(console):
     _fake, client = console
     with pytest.raises(AuthError):
         await client("wrong").login()
+
+
+async def test_logging_in_again_starts_a_new_session(console):
+    fake, client = console
+    protect = client()
+    await protect.login()
+    await protect.login()
+    assert fake.logins == 2
+    assert (await protect.bootstrap())["lastUpdateId"] == "u1"
 
 
 async def test_patch_sends_csrf_and_logs_in_again_once_expired(console):

@@ -327,8 +327,9 @@ class Bridge:
         await self._update(key, changes, asyncio.get_running_loop().time())
 
     async def offline(self) -> None:
-        """The readings are no longer current."""
-        for key in self.sensors:
+        """The readings are no longer current. Before the first bootstrap of
+        this connection the sensors are the ones followed last time."""
+        for key in self.sensors or self._known():
             await self._changed(d.availability_topic(key), "offline")
 
     # --- Commands --------------------------------------------------------------
