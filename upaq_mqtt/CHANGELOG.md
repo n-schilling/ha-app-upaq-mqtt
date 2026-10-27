@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.7] - 2026-10-27
+
+### Changed
+
+- aiohttp 3.14.5 (was 3.14.4)
+
 ## [2.4.6] - 2026-10-19
 
 ### Fixed
