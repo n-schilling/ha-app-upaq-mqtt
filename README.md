@@ -9,7 +9,7 @@
 
 ![UP-AirQuality MQTT Bridge](upaq_mqtt/logo.png)
 
-A Home Assistant app (formerly add-on) that brings UniFi Protect UP-AirQuality sensors into Home Assistant through MQTT discovery: every reading as a sensor, optionally the LED ring and alert thresholds as controls. It follows Protect's update stream instead of polling and sends each reading only when it changed.
+A Home Assistant app that brings UniFi Protect UP-AirQuality sensors into Home Assistant through MQTT discovery: every reading as a sensor, optionally the LED ring and alert thresholds as controls. It follows Protect's update stream instead of polling and sends each reading only when it changed.
 
 ## Installation
 
@@ -17,7 +17,7 @@ A Home Assistant app (formerly add-on) that brings UniFi Protect UP-AirQuality s
 
    [![Add the repository to My Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fn-schilling%2Fha-app-upaq-mqtt)
 
-   Or add it manually: **Settings → Apps → Install app → ⋮ → Repositories** (before Home Assistant 2026.2: **Settings → Add-ons → Add-on store**), then paste:
+   Or add it manually: **Settings → Apps → Install app → ⋮ → Repositories**, then paste:
 
    ```text
    https://github.com/n-schilling/ha-app-upaq-mqtt
