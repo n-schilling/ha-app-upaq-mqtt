@@ -23,6 +23,7 @@ from upaq_bridge.__main__ import Router
 from upaq_bridge.bridge import Bridge
 
 HOST = os.environ.get("MQTT_TEST_HOST")
+PORT = int(os.environ.get("MQTT_TEST_PORT") or 1883)
 pytestmark = pytest.mark.skipif(not HOST, reason="needs a broker in MQTT_TEST_HOST")
 LIB = Path(__file__).resolve().parents[1] / "upaq_mqtt/rootfs/usr/lib"
 
@@ -35,7 +36,7 @@ def new_mac():
 
 async def retained(topic, wait=1.0):
     """Retained payload of a topic, None when there is none."""
-    async with aiomqtt.Client(HOST, identifier=f"check-{uuid.uuid4().hex[:8]}") as client:
+    async with aiomqtt.Client(HOST, PORT, identifier=f"check-{uuid.uuid4().hex[:8]}") as client:
         await client.subscribe(topic, qos=1)
         try:
             async with asyncio.timeout(wait):
@@ -48,13 +49,13 @@ async def retained(topic, wait=1.0):
 
 
 async def publish_retained(topic, payload):
-    async with aiomqtt.Client(HOST, identifier=f"seed-{uuid.uuid4().hex[:8]}") as client:
+    async with aiomqtt.Client(HOST, PORT, identifier=f"seed-{uuid.uuid4().hex[:8]}") as client:
         await client.publish(topic, payload, qos=1, retain=True)
 
 
 async def run_bridge(ctx, tmp_path, device, controls=False, protect=None):
     """Connects a bridge as __main__ does; returns (client, bridge, router task)."""
-    client = aiomqtt.Client(HOST, identifier=f"bridge-{uuid.uuid4().hex[:8]}")
+    client = aiomqtt.Client(HOST, PORT, identifier=f"bridge-{uuid.uuid4().hex[:8]}")
     await client.__aenter__()
     router = Router(client)
 
@@ -63,7 +64,7 @@ async def run_bridge(ctx, tmp_path, device, controls=False, protect=None):
 
     bridge = Bridge(publish, protect or FakeProtect(), ctx, controls=controls, min_interval=0,
                     store=tmp_path / "sensors.json", retained=router.retained, migrate_wait=0.5)
-    task = asyncio.create_task(router.run(bridge, controls))
+    task = asyncio.gather(router.run(bridge, controls), bridge.command_loop())
     await asyncio.sleep(0.2)
     await bridge.setup({"sensors": [device], "lastUpdateId": "u1"})
     return client, bridge, task
@@ -95,7 +96,7 @@ async def test_commands_reach_protect(ctx, tmp_path):
     protect = FakeProtect()
     client, _bridge, task = await run_bridge(ctx, tmp_path, sensor(mac=mac), controls=True, protect=protect)
     try:
-        async with aiomqtt.Client(HOST, identifier=f"ha-{uuid.uuid4().hex[:8]}") as ha:
+        async with aiomqtt.Client(HOST, PORT, identifier=f"ha-{uuid.uuid4().hex[:8]}") as ha:
             await ha.publish(f"up_airquality/{key}/led_brightness/set", "55", qos=1)
         for _ in range(50):
             if protect.patches:
@@ -114,7 +115,7 @@ async def test_last_will_when_the_bridge_dies():
         "import asyncio, os, aiomqtt\n"
         "from upaq_bridge.__main__ import last_will\n"
         "async def main():\n"
-        f"    client = aiomqtt.Client({HOST!r}, will=last_will(), identifier='dying-bridge')\n"
+        f"    client = aiomqtt.Client({HOST!r}, {PORT}, will=last_will(), identifier='dying-bridge')\n"
         "    await client.__aenter__()\n"
         "    await client.publish(last_will().topic, 'online', qos=1, retain=True)\n"
         "    os._exit(1)\n"

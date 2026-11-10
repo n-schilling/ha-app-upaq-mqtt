@@ -32,6 +32,7 @@ class Config:
     mqtt_port: int
     mqtt_username: str | None
     mqtt_password: str | None
+    mqtt_tls: bool
     discovery_prefix: str
     enable_controls: bool
     min_interval: int
@@ -118,7 +119,7 @@ def load(path: Path = OPTIONS, mqtt_service=supervisor_mqtt) -> Config:
     if opts.get("mqtt_host"):
         mqtt = {"host": opts["mqtt_host"], "port": opts.get("mqtt_port") or 1883,
                 "username": opts.get("mqtt_username") or None,
-                "password": opts.get("mqtt_password") or None}
+                "password": opts.get("mqtt_password") or None, "ssl": False}
     else:
         mqtt = mqtt_service()
 
@@ -132,6 +133,7 @@ def load(path: Path = OPTIONS, mqtt_service=supervisor_mqtt) -> Config:
         mqtt_port=int(mqtt.get("port") or 1883),
         mqtt_username=mqtt.get("username") or None,
         mqtt_password=mqtt.get("password") or None,
+        mqtt_tls=mqtt.get("ssl") is True,
         discovery_prefix=opts.get("discovery_prefix") or "homeassistant",
         enable_controls=bool(opts.get("enable_controls", False)),
         min_interval=int(opts.get("min_interval", 60)),

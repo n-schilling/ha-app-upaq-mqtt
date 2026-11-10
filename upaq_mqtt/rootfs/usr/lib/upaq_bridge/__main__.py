@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import signal
+import ssl
 import sys
 from pathlib import Path
 
@@ -30,8 +31,11 @@ def last_will() -> aiomqtt.Will:
 async def run(cfg: cfg_module.Config) -> None:
     slug = os.environ.get("HOSTNAME", "upaq-mqtt").replace("-", "_")
     ctx = d.Context(prefix=cfg.discovery_prefix, version=os.environ.get("APP_VERSION", "unknown"),
-                    config_url=f"homeassistant://hassio/addon/{slug}/info"
+                    config_url=f"homeassistant://config/app/{slug}/info"
                     if os.environ.get("SUPERVISOR_TOKEN") else None)
+    # A broker with TLS (as the Supervisor reports it): checked against the
+    # system's CAs and its host name
+    tls = ssl.create_default_context() if cfg.mqtt_tls else None
     will = last_will()
     failures = 0
     async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as http:
@@ -41,7 +45,7 @@ async def run(cfg: cfg_module.Config) -> None:
             try:
                 async with aiomqtt.Client(cfg.mqtt_host, cfg.mqtt_port, username=cfg.mqtt_username,
                                           password=cfg.mqtt_password, will=will,
-                                          identifier=f"{slug}-bridge") as mqtt:
+                                          tls_context=tls, identifier=f"{slug}-bridge") as mqtt:
                     LOGGER.info("Connected to MQTT %s:%d", cfg.mqtt_host, cfg.mqtt_port)
                     failures = 0
 
@@ -60,6 +64,8 @@ async def run(cfg: cfg_module.Config) -> None:
                             tasks.create_task(router.run(bridge, cfg.enable_controls))
                             tasks.create_task(bridge.follow_protect())
                             tasks.create_task(bridge.flush_loop())
+                            if cfg.enable_controls:
+                                tasks.create_task(bridge.command_loop())
                     finally:
                         # A regular stop: the last will only covers a dying bridge
                         try:
@@ -74,20 +80,30 @@ async def run(cfg: cfg_module.Config) -> None:
 
 
 class Router:
-    """The one reader of the MQTT messages: commands go to the bridge,
-    retained discovery messages to a running retained() call."""
+    """The one reader of the MQTT messages: commands go to the bridge's queue,
+    retained discovery messages to a running retained() call. It never waits
+    for Protect, so retained messages are read while a command is written."""
 
     def __init__(self, mqtt: aiomqtt.Client) -> None:
         self._mqtt = mqtt
         self._collect: dict[str, str] | None = None
 
-    async def retained(self, filters: list[str], wait: float = 2.0) -> dict[str, str]:
+    async def retained(self, filters: list[str], wait: float = 2.0, quiet: float = 0.5,
+                       longest: float = 10.0) -> dict[str, str]:
+        """Collects the retained messages: at least wait seconds, then until
+        none came for quiet seconds, at most longest seconds in all."""
         collected: dict[str, str] = {}
         self._collect = collected
+        loop = asyncio.get_running_loop()
         try:
             for topic_filter in filters:
                 await self._mqtt.subscribe(topic_filter, qos=1)
+            end = loop.time() + longest
             await asyncio.sleep(wait)
+            seen = -1
+            while len(collected) != seen and loop.time() < end:
+                seen = len(collected)
+                await asyncio.sleep(quiet)
             for topic_filter in filters:
                 await self._mqtt.unsubscribe(topic_filter)
         finally:
@@ -106,8 +122,9 @@ class Router:
             if topic.endswith("/config"):
                 if self._collect is not None and message.retain:
                     self._collect[topic] = raw
-            elif controls and topic.endswith("/set"):
-                await bridge.handle_command(topic, raw)
+            elif controls and topic.endswith("/set") and not message.retain:
+                # A retained command would be applied again at every start
+                bridge.queue_command(topic, raw)
 
 
 def main() -> None:

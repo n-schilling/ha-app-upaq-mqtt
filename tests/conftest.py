@@ -87,4 +87,4 @@ class FakeProtect:
 @pytest.fixture
 def ctx():
     return d.Context(prefix="homeassistant", version="2.0.0",
-                     config_url="homeassistant://hassio/addon/7047f973_upaq_mqtt/info")
+                     config_url="homeassistant://config/app/0123abcd_upaq_mqtt/info")

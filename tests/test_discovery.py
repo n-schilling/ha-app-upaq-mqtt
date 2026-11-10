@@ -39,7 +39,7 @@ def test_shared_availability_origin_and_topics(ctx):
                                  {"topic": f"up_airquality/{KEY}/availability"}]
     assert p["availability_mode"] == "all"
     assert p["origin"]["sw_version"] == "2.0.0"
-    assert p["device"]["configuration_url"] == "homeassistant://hassio/addon/7047f973_upaq_mqtt/info"
+    assert p["device"]["configuration_url"] == "homeassistant://config/app/0123abcd_upaq_mqtt/info"
     pm = p["components"]["pm2p5"]
     assert pm["state_topic"] == f"up_airquality/{KEY}/pm2p5"
     assert pm["json_attributes_topic"] == f"up_airquality/{KEY}/pm2p5/attributes"

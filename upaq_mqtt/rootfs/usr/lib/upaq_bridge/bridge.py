@@ -17,6 +17,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+import aiomqtt
+
 from . import discovery as d
 from .protect import AuthError, CertificateMismatch, Protect, ProtectError, decode_update
 
@@ -26,6 +28,14 @@ SENSOR_TYPE = "UP-AirQuality"
 FIRMWARE_FIELDS = ("firmwareVersion", "latestFirmwareVersion", "fwUpdateState")
 # Retry delays after errors, in seconds
 BACKOFF = (5, 15, 60, 300)
+# Pause before reading the bootstrap again after sensors came or went, so a
+# flapping sensor cannot make the bridge hammer the console
+RESYNC_PAUSE = 5.0
+# Commands from MQTT: at most this many waiting (the newest value per control
+# replaces a waiting one), and at least this many seconds between two writes
+# to Protect
+MAX_COMMANDS = 64
+COMMAND_GAP = 1.0
 
 Publish = Callable[[str, str, bool], Awaitable[None]]
 # Reads the retained messages on topic filters: topic -> payload
@@ -69,10 +79,17 @@ def is_connected(device: dict) -> bool:
     return device.get("state", "CONNECTED") == "CONNECTED"
 
 
+def _component_topics(component: dict) -> list[str]:
+    """The retained topics a discovery component reads, full or abbreviated."""
+    return [t for f in ("state_topic", "stat_t", "json_attributes_topic", "json_attr_t")
+            if isinstance(t := component.get(f), str) and t]
+
+
 class Bridge:
     def __init__(self, publish: Publish, protect: Protect, ctx: d.Context, *,
                  controls: bool, min_interval: int, store: Path,
-                 retained: Retained | None = None, migrate_wait: float = 2.0) -> None:
+                 retained: Retained | None = None, migrate_wait: float = 2.0,
+                 command_gap: float = COMMAND_GAP) -> None:
         self._publish = publish
         self._retained = retained
         self._migrate_wait = migrate_wait
@@ -88,7 +105,11 @@ class Bridge:
         self._last: dict[str, float] = {}        # reading topic -> time sent
         self._pending: dict[str, str] = {}       # reading topic -> held payload
         self._wake = asyncio.Event()
-        self._announced: dict[str, dict[str, str]] = {}   # sensor key -> entity -> platform
+        # sensor key -> entity -> (platform, the retained topics it reads)
+        self._announced: dict[str, dict[str, tuple[str, list[str]]]] = {}
+        self._commands: dict[str, str] = {}      # command topic -> newest payload
+        self._command_ready = asyncio.Event()
+        self._command_gap = command_gap
 
     # --- MQTT ----------------------------------------------------------------
     async def _send(self, topic: str, value: str, retain: bool = True) -> None:
@@ -117,11 +138,17 @@ class Bridge:
         """Sends held readings once their interval has passed."""
         loop = asyncio.get_running_loop()
         while True:
+            self._wake.clear()
             if not self._pending:
-                self._wake.clear()
                 await self._wake.wait()
+                continue
             due = min(self._last[t] + self._min_interval for t in self._pending)
-            await asyncio.sleep(max(0.0, due - loop.time()))
+            if due > loop.time():
+                # A reading held meanwhile may be due earlier: wake up for it
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(due - loop.time()):
+                        await self._wake.wait()
+                continue
             now = loop.time()
             for topic in list(self._pending):
                 if now >= self._last[topic] + self._min_interval:
@@ -140,10 +167,18 @@ class Bridge:
         except (OSError, ValueError):
             return set()
 
+    def _forget(self, topics: list[str]) -> None:
+        """Drops what the bridge holds for topics it no longer serves."""
+        for topic in topics:
+            self._sent.pop(topic, None)
+            self._pending.pop(topic, None)
+            self._last.pop(topic, None)
+
     async def setup(self, bootstrap: dict) -> None:
         devices = [dev for dev in bootstrap.get("sensors") or []
                    if isinstance(dev, dict) and dev.get("type") == SENSOR_TYPE
                    and dev.get("id") and d.sensor_key(dev)]
+        previous = set(self.sensors)
         self.sensors = {d.sensor_key(dev): dev for dev in devices}
         self._ids = {dev["id"]: key for key, dev in self.sensors.items()}
         self._names = display_names(devices)
@@ -153,19 +188,26 @@ class Bridge:
         # What the broker holds from earlier runs: the device messages, and
         # the single entity topics of the versions before 2.1.0
         prefix = self._ctx.prefix
-        known = self._known() | set(self.sensors)
+        known = self._known() | previous | set(self.sensors)
         filters = [f for key in known for f in (d.device_topic(prefix, key), d.legacy_filter(prefix, key))]
         held = await self._retained(filters) if self._retained and filters else {}
 
         def singles(key: str) -> list[str]:
+            # <prefix>/<component>/<node>/<object>/config; the prefix may hold "/"
             node = f"protect_air_quality_{key}"
-            return [t for t, v in held.items() if v and t.split("/")[2:3] == [node]]
+            return [t for t, v in held.items()
+                    if v and t.startswith(f"{prefix}/")
+                    and t.removeprefix(f"{prefix}/").split("/")[1:2] == [node]]
 
         # Sensors removed from Protect since the last run: remove their entities
         for key in known - set(self.sensors):
             LOGGER.info("Sensor %s is gone from Protect, removing its entities", key)
             for topic in [d.device_topic(prefix, key), *singles(key), *d.state_topics(key)]:
                 await self._send(topic, "")
+            # Nothing held back may bring a value of it back later
+            self._forget([t for t in [*self._sent, *self._pending, *self._last]
+                          if t.startswith(f"{d.base_topic(key)}/")])
+            self._announced.pop(key, None)
         try:
             self._store.write_text(json.dumps(sorted(self.sensors)))
         except OSError as err:
@@ -201,18 +243,28 @@ class Bridge:
         if before is not None or key not in self._announced:
             try:
                 held = (json.loads(before) if before else {}).get("components") or {}
-                old = {k: v.get("platform") or v.get("p") for k, v in held.items() if isinstance(v, dict)}
+                old = {k: (v.get("platform") or v.get("p"), _component_topics(v))
+                       for k, v in held.items() if isinstance(v, dict)}
             except (ValueError, AttributeError):
                 old = {}
         else:
             old = self._announced[key]
-        self._announced[key] = {k: v["platform"] for k, v in payload["components"].items()}
-        gone = {k: {"platform": platform} for k, platform in old.items()
-                if k not in payload["components"] and platform}
+        now = {k: (v["platform"], _component_topics(v)) for k, v in payload["components"].items()}
+        self._announced[key] = now
+        gone = {k: {"platform": platform} for k, (platform, _) in old.items()
+                if k not in now and platform}
         if gone:
             removal = {**payload, "components": {**payload["components"], **gone}}
             await self._send(topic, json.dumps(removal))
         await self._changed(topic, json.dumps(payload))
+        # The retained states of removed entities go as well, so that nothing
+        # stale is left on the broker or shows up when they come back
+        used = {t for _, topics in now.values() for t in topics}
+        own = f"{d.base_topic(key)}/"
+        stale = sorted({t for k in gone for t in old[k][1] if t not in used and t.startswith(own)})
+        for state_topic in stale:
+            await self._send(state_topic, "")
+        self._forget(stale)
 
     async def _update(self, key: str, changes: dict, now: float, initial: bool = False) -> None:
         """Publishes what changed on one sensor."""
@@ -318,8 +370,14 @@ class Bridge:
         if not decoded:
             return
         action, changes = decoded
-        if action.get("action") in ("add", "remove"):
+        # Only a sensor the bridge follows going, or a new UP-AirQuality (or
+        # one whose type the packet does not say), needs a new bootstrap
+        if action.get("action") == "remove" and action.get("id") in self._ids:
             raise Resync
+        if action.get("action") == "add" and changes.get("type") in (None, SENSOR_TYPE):
+            raise Resync
+        if action.get("action") in ("add", "remove"):
+            return
         key = self._ids.get(action.get("id"))
         if key is None or not changes:
             return
@@ -333,6 +391,35 @@ class Bridge:
             await self._changed(d.availability_topic(key), "offline")
 
     # --- Commands --------------------------------------------------------------
+    def queue_command(self, topic: str, raw: str) -> None:
+        """Takes a command from MQTT without waiting for Protect; the newest
+        value per control wins, and the queue is bounded."""
+        parts = topic.split("/")
+        if not self._controls or len(parts) < 4 or parts[1] not in self.sensors:
+            return
+        if topic not in self._commands and len(self._commands) >= MAX_COMMANDS:
+            LOGGER.warning("Too many commands waiting, ignoring %s", topic)
+            return
+        self._commands[topic] = raw
+        self._command_ready.set()
+
+    async def command_loop(self) -> None:
+        """Writes the queued commands to Protect one after another."""
+        while True:
+            self._command_ready.clear()
+            if not self._commands:
+                await self._command_ready.wait()
+                continue
+            topic = next(iter(self._commands))
+            raw = self._commands.pop(topic)
+            try:
+                await self.handle_command(topic, raw)
+            except aiomqtt.MqttError:
+                raise
+            except Exception:
+                LOGGER.exception("Command %s failed", topic)
+            await asyncio.sleep(self._command_gap)
+
     async def handle_command(self, topic: str, raw: str) -> None:
         """up_airquality/<key>/<control>/set or .../thresh/<metric>/<bound>/set"""
         parts = topic.split("/")
@@ -417,14 +504,28 @@ class Bridge:
         await self._send(d.bridge_topic(self._ctx.prefix), json.dumps(d.bridge_payload(self._ctx)))
 
     # --- Protect session ---------------------------------------------------------
+    async def _bootstrap(self, reuse: bool) -> dict:
+        """The bootstrap, with the current session when reuse is set."""
+        if reuse:
+            try:
+                return await self._protect.bootstrap()
+            except AuthError as err:
+                if isinstance(err, CertificateMismatch):
+                    raise
+                LOGGER.info("Protect: %s, logging in again", err)
+        await self._protect.login()
+        return await self._protect.bootstrap()
+
     async def follow_protect(self) -> None:
         """Logs in, reads the bootstrap and follows the updates; never returns."""
         failures = 0
+        # After a resync the session is still good: only read the bootstrap
+        resync = False
         while True:
             started = asyncio.get_running_loop().time()
             try:
-                await self._protect.login()
-                bootstrap = await self._protect.bootstrap()
+                bootstrap = await self._bootstrap(resync)
+                resync = False
                 await self.setup(bootstrap)
                 await self._changed(d.PROTECT_CONNECTED, "ON")
                 if not self.sensors:
@@ -435,7 +536,9 @@ class Bridge:
                         await self.handle_packet(packet)
                 LOGGER.info("Protect closed the update stream")
             except Resync:
-                LOGGER.info("Sensors changed in Protect, reading them again")
+                LOGGER.info("Sensors changed in Protect, reading them again in %.0f s", RESYNC_PAUSE)
+                await asyncio.sleep(RESYNC_PAUSE)
+                resync = True
                 continue
             except CertificateMismatch as err:
                 # Never send the password to another certificate: stop, an
@@ -456,10 +559,12 @@ class Bridge:
                 LOGGER.warning("Protect: %s", err)
                 await self._changed(d.PROTECT_CONNECTED, "OFF")
                 await self.offline()
-            except (KeyError, TypeError, ValueError, AttributeError):
-                # Data Protect sent in an unexpected shape: start over instead of
-                # stopping the bridge
-                LOGGER.exception("Unexpected data from Protect")
+            except aiomqtt.MqttError:
+                raise     # the broker is gone: __main__ connects again
+            except Exception:
+                # Data Protect sent in an unexpected shape, or any other error:
+                # start over instead of stopping the bridge
+                LOGGER.exception("Unexpected error while following Protect")
                 await self.offline()
             # A connection that held for a while resets the backoff
             if asyncio.get_running_loop().time() - started > 120:

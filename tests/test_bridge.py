@@ -6,6 +6,7 @@ import json
 import pytest
 
 from conftest import KEY, FakeProtect, Recorder, packet, sensor
+from upaq_bridge import discovery as d
 from upaq_bridge.bridge import Bridge, Resync
 from upaq_bridge.protect import AuthError, CertificateMismatch, ProtectError
 
@@ -474,3 +475,180 @@ async def test_a_refused_login_leaves_the_connection_alone(ctx, tmp_path, monkey
     bridge, mqtt = session_bridge(ctx, tmp_path, SessionProtect(AuthError("login refused (401)")))
     await follow_until_retry(bridge, mqtt, monkeypatch)
     assert mqtt.last(CONNECTED) is None
+
+
+async def test_an_unexpected_error_does_not_stop_the_bridge(ctx, tmp_path, monkeypatch, caplog):
+    bridge, mqtt = session_bridge(ctx, tmp_path, SessionProtect(RuntimeError("surprise")))
+    await follow_until_retry(bridge, mqtt, monkeypatch)
+    assert "Unexpected error while following Protect" in caplog.text
+
+
+class ResyncProtect(SessionProtect):
+    """Sends one add packet of a new UP-AirQuality, then keeps quiet."""
+
+    def __init__(self):
+        super().__init__()
+        self.logins = 0
+        self.bootstraps = 0
+
+    async def login(self):
+        self.logins += 1
+
+    async def bootstrap(self):
+        self.bootstraps += 1
+        return await super().bootstrap()
+
+    async def updates(self, _last):
+        if self.bootstraps == 1:
+            yield update({"type": "UP-AirQuality"}, action="add", sensor_id="new")
+        self.connected.set()
+        await asyncio.Event().wait()
+        yield b""
+
+
+async def test_a_resync_reads_the_bootstrap_again_without_logging_in(ctx, tmp_path, monkeypatch):
+    pauses = []
+    real_sleep = asyncio.sleep
+
+    async def sleep(delay):
+        pauses.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr("upaq_bridge.bridge.asyncio.sleep", sleep)
+    protect = ResyncProtect()
+    bridge, _ = session_bridge(ctx, tmp_path, protect)
+    task = asyncio.create_task(bridge.follow_protect())
+    try:
+        async with asyncio.timeout(2):
+            await protect.connected.wait()
+        assert (protect.logins, protect.bootstraps) == (1, 2)
+        assert pauses == [5.0]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+async def test_add_and_remove_of_other_devices_need_no_resync(make):
+    bridge, _, _, boot = make()
+    await bridge.setup(boot)
+    await bridge.handle_packet(update({}, action="remove", sensor_id="other"))
+    await bridge.handle_packet(update({"type": "UP-Sense"}, action="add", sensor_id="other"))
+    with pytest.raises(Resync):
+        await bridge.handle_packet(update({}, action="remove"))
+
+
+async def test_a_gone_sensor_keeps_no_held_reading(make):
+    bridge, mqtt, _, boot = make(min_interval=60)
+    await bridge.setup(boot)
+    await bridge.handle_packet(update({"airQuality": {"co2": {"value": 900}}}))
+    assert bridge._pending
+    await bridge.setup({"sensors": [], "lastUpdateId": "u2"})
+    assert not bridge._pending and not bridge._last
+    assert mqtt.last(f"{BASE}/co2") == ""
+
+
+async def test_a_reading_held_later_but_due_earlier_is_sent_in_time(make):
+    bridge, mqtt, _, boot = make(min_interval=1)
+    await bridge.setup(boot)
+    loop = asyncio.get_running_loop()
+    flusher = asyncio.create_task(bridge.flush_loop())
+    try:
+        # co2 was sent just now, aqi long ago: a held co2 is due in 1 s ...
+        await bridge.handle_packet(update({"airQuality": {"co2": {"value": 900}}}))
+        bridge._last[f"{BASE}/aqi"] = loop.time() - 0.9
+        # ... a held aqi in 0.1 s, though it came in later
+        await bridge.handle_packet(update({"airQuality": {"aqi": {"value": 40}}}))
+        await asyncio.sleep(0.4)
+        assert mqtt.last(f"{BASE}/aqi") == "40"
+        assert mqtt.last(f"{BASE}/co2") == "655"
+    finally:
+        flusher.cancel()
+
+
+async def test_single_entity_topics_under_a_prefix_with_a_slash(ctx, tmp_path):
+    prefixed = d.Context(prefix="ha/discovery", version=ctx.version, config_url=None)
+    legacy = f"ha/discovery/sensor/protect_air_quality_{KEY}/co2/config"
+    mqtt = Recorder()
+
+    async def retained(_filters):
+        return {legacy: '{"unique_id": "x"}'}
+
+    bridge = Bridge(mqtt, FakeProtect(), prefixed, controls=False, min_interval=0,
+                    store=tmp_path / "sensors.json", retained=retained, migrate_wait=0)
+    await bridge.setup({"sensors": [sensor()], "lastUpdateId": "u1"})
+    assert [v for t, v, _ in mqtt.messages if t == legacy] == ['{"migrate_discovery": true}', ""]
+
+
+async def test_removed_entities_leave_no_retained_state(make):
+    bridge, mqtt, _, boot = make(controls=True)
+    await bridge.setup(boot)
+    assert mqtt.last(f"{BASE}/thresh/co2/low/state") == "800"
+    # The safe zone is removed in Protect
+    await bridge.handle_packet(update({"airQualitySettings": {"co2Settings": {
+        "lowThreshold": None, "highThreshold": None}}}))
+    assert mqtt.last(f"{BASE}/co2/outside_safe_zone") == ""
+    assert mqtt.last(f"{BASE}/co2/safe_zone") == ""
+    assert mqtt.last(f"{BASE}/co2") == "655"            # the reading stays
+    assert f"{BASE}/co2/outside_safe_zone" not in bridge._sent
+
+
+async def test_switching_controls_off_clears_their_states(make):
+    on, mqtt_on, _, boot = make(controls=True)
+    await on.setup(boot)
+    bridge, mqtt, _, boot = make(controls=False, held={DEVICE: mqtt_on.last(DEVICE)})
+    await bridge.setup(boot)
+    assert mqtt.last(f"{BASE}/led_brightness/state") == ""
+    assert mqtt.last(f"{BASE}/thresh/co2/high/state") == ""
+    assert mqtt.last(f"{BASE}/co2") == "655"
+
+
+async def test_commands_wait_in_a_queue_and_the_newest_wins(ctx, tmp_path):
+    protect = FakeProtect()
+    bridge = Bridge(Recorder(), protect, ctx, controls=True, min_interval=0,
+                    store=tmp_path / "sensors.json", migrate_wait=0, command_gap=0)
+    await bridge.setup({"sensors": [sensor()], "lastUpdateId": "u1"})
+    bridge.queue_command(f"{BASE}/led_brightness/set", "10")
+    bridge.queue_command(f"{BASE}/night_mode/set", "ON")
+    bridge.queue_command(f"{BASE}/led_brightness/set", "20")
+    bridge.queue_command("up_airquality/unknown/led_brightness/set", "30")
+    worker = asyncio.create_task(bridge.command_loop())
+    try:
+        for _ in range(50):
+            if len(protect.patches) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert [c for _, c in protect.patches] == [
+            {"airQualitySettings": {"ringLedBrightness": 20}},
+            {"airQualitySettings": {"nightModeEnabled": True}}]
+    finally:
+        worker.cancel()
+
+
+async def test_the_command_queue_is_bounded(ctx, tmp_path, caplog):
+    bridge = Bridge(Recorder(), FakeProtect(), ctx, controls=True, min_interval=0,
+                    store=tmp_path / "sensors.json", migrate_wait=0)
+    await bridge.setup({"sensors": [sensor()], "lastUpdateId": "u1"})
+    for n in range(100):
+        bridge.queue_command(f"{BASE}/thresh/x{n}/low/set", "1")
+    assert len(bridge._commands) == 64
+    assert "Too many commands waiting" in caplog.text
+
+
+async def test_a_command_that_fails_does_not_stop_the_queue(ctx, tmp_path):
+    protect = FakeProtect()
+    protect.fail = ProtectError("PATCH timed out")
+    bridge = Bridge(Recorder(), protect, ctx, controls=True, min_interval=0,
+                    store=tmp_path / "sensors.json", migrate_wait=0, command_gap=0)
+    await bridge.setup({"sensors": [sensor()], "lastUpdateId": "u1"})
+    worker = asyncio.create_task(bridge.command_loop())
+    try:
+        bridge.queue_command(f"{BASE}/led_brightness/set", "10")
+        await asyncio.sleep(0.05)
+        protect.fail = None
+        bridge.queue_command(f"{BASE}/led_brightness/set", "20")
+        await asyncio.sleep(0.05)
+        assert protect.patches == [(ID, {"airQualitySettings": {"ringLedBrightness": 20}})]
+        assert not worker.done()
+    finally:
+        worker.cancel()

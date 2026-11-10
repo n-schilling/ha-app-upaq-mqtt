@@ -95,3 +95,9 @@ def test_public_ca_needs_a_name_not_an_ip_address(tmp_path):
 def test_unknown_check_is_named(tmp_path):
     with pytest.raises(ConfigError, match="certificate_check"):
         load(write(tmp_path, certificate_check="maybe"), service)
+
+
+def test_tls_of_the_supervisor_broker_is_used(tmp_path):
+    cfg = load(write(tmp_path), lambda: {**service(), "port": 8883, "ssl": True})
+    assert (cfg.mqtt_port, cfg.mqtt_tls) == (8883, True)
+    assert load(write(tmp_path), service).mqtt_tls is False

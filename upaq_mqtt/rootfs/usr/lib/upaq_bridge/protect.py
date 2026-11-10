@@ -70,10 +70,16 @@ class PinStore:
         return value if isinstance(value, str) and value else None
 
     def save(self, fingerprint: str) -> None:
+        """Keeps the pin for the next start; a full or read-only disk only
+        costs that, the pin in memory stays in force."""
         tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"fingerprint": fingerprint,
-                                   "pinned_at": datetime.now(UTC).isoformat(timespec="seconds")}))
-        tmp.replace(self._path)
+        try:
+            tmp.write_text(json.dumps({"fingerprint": fingerprint,
+                                       "pinned_at": datetime.now(UTC).isoformat(timespec="seconds")}))
+            tmp.replace(self._path)
+        except OSError as err:
+            LOGGER.warning("Could not save the pinned certificate to %s (%s); it is kept until the "
+                           "app stops", self._path, err)
 
 
 def _frame(data: bytes, offset: int) -> tuple[bytes, int, int]:
@@ -187,9 +193,11 @@ class Protect:
             self._store.save(fingerprint)
         self.pinned = fingerprint
         self._ssl = ssl_check(self.check, fingerprint)
-        LOGGER.info("Pinned the console's certificate on first use: %s", fingerprint)
+        LOGGER.warning("Pinned the console's certificate on first use: %s. Compare it with the "
+                       "fingerprint your browser shows for the console, or set "
+                       "certificate_fingerprint to it", fingerprint)
 
-    def _certificate_error(self, err: aiohttp.ClientError) -> AuthError | None:
+    def _certificate_error(self, err: Exception) -> AuthError | None:
         if isinstance(err, aiohttp.ServerFingerprintMismatch):
             return CertificateMismatch(self.pinned or "", format_digest(err.got))
         if isinstance(err, aiohttp.ClientConnectorCertificateError):
@@ -206,14 +214,18 @@ class Protect:
         self._session.cookie_jar.clear()
         self._csrf = None
         try:
+            # No redirects: the password goes to the console and nowhere else
             async with self._session.post(f"{self._base}/api/auth/login", json=body,
-                                          ssl=self._ssl, timeout=TIMEOUT) as resp:
+                                          ssl=self._ssl, timeout=TIMEOUT,
+                                          allow_redirects=False) as resp:
                 if resp.status in (401, 403):
                     raise AuthError(f"login refused ({resp.status}): check user and password")
-                if resp.status >= 400:
+                if resp.status >= 300:
                     raise ProtectError(f"login failed with HTTP {resp.status}")
                 self._csrf = resp.headers.get("X-CSRF-Token") or self._csrf
                 await resp.read()
+        except TimeoutError as err:
+            raise ProtectError(f"console did not answer the login within {TIMEOUT.total:.0f} s") from err
         except aiohttp.ClientError as err:
             raise self._certificate_error(err) or ProtectError(f"console not reachable: {err}") from err
         if not any(cookie.key == "TOKEN" for cookie in self._session.cookie_jar):
@@ -233,13 +245,15 @@ class Protect:
         try:
             async with self._session.request(method, f"{self._base}/proxy/protect/api{path}",
                                              json=body, headers=headers, ssl=self._ssl,
-                                             timeout=TIMEOUT) as resp:
+                                             timeout=TIMEOUT, allow_redirects=False) as resp:
                 self._csrf = resp.headers.get("X-Updated-CSRF-Token") or self._csrf
                 if resp.status == 401:
                     raise AuthError("session expired")
-                if resp.status >= 400:
+                if resp.status >= 300:
                     raise ProtectError(f"{method} {path} failed with HTTP {resp.status}")
                 return await resp.json(content_type=None)
+        except TimeoutError as err:
+            raise ProtectError(f"{method} {path}: no answer within {TIMEOUT.total:.0f} s") from err
         except aiohttp.ClientError as err:
             raise self._certificate_error(err) or ProtectError(f"{method} {path} failed: {err}") from err
 
@@ -270,5 +284,7 @@ class Protect:
                         yield msg.data
                     elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
                         break
+        except TimeoutError as err:
+            raise ProtectError("update stream: no answer in time") from err
         except aiohttp.ClientError as err:
             raise self._certificate_error(err) or ProtectError(f"update stream failed: {err}") from err

@@ -1,5 +1,6 @@
 """Packet decoding and the Protect client against a fake console."""
 
+import asyncio
 import shutil
 import ssl
 import struct
@@ -12,6 +13,7 @@ from aiohttp import web
 
 from conftest import frame, packet
 from upaq_bridge.protect import (AuthError, CertificateMismatch, CertificateUntrusted, PinStore, Protect,
+                                 ProtectError,
                                  decode_update, format_fingerprint, server_fingerprint, ssl_check)
 
 ACTION = {"action": "update", "modelKey": "sensor", "id": "s1"}
@@ -246,3 +248,62 @@ def test_pin_store_survives_a_broken_file(tmp_path):
     assert PinStore(path).load() is None
     PinStore(path).save("AB:CD")
     assert PinStore(path).load() == "AB:CD"
+
+
+def test_a_pin_that_cannot_be_saved_is_kept_in_memory(tmp_path, caplog):
+    store = PinStore(tmp_path / "missing" / "certificate.json")
+    store.save("AB:CD")                      # the folder does not exist
+    assert "Could not save the pinned certificate" in caplog.text
+    assert store.load() is None
+
+
+# --- A console that answers late or redirects -------------------------------------
+
+@pytest.fixture
+async def slow_console(aiohttp_server, monkeypatch):
+    """Accepts connections but answers only after the client gave up; the
+    login of /redirect sends the client elsewhere."""
+    monkeypatch.setattr("upaq_bridge.protect.TIMEOUT", aiohttp.ClientTimeout(total=0.2))
+    elsewhere = []
+
+    async def hang(_request):
+        await asyncio.sleep(5)
+        return web.json_response({})
+
+    async def redirect(_request):
+        raise web.HTTPTemporaryRedirect("/elsewhere")
+
+    async def other(request):
+        elsewhere.append(await request.read())
+        return web.json_response({})
+
+    app = web.Application()
+    app.add_routes([web.post("/api/auth/login", hang),
+                    web.get("/proxy/protect/api/bootstrap", hang),
+                    web.post("/redirect/api/auth/login", redirect),
+                    web.post("/elsewhere", other)])
+    server = await aiohttp_server(app)
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as http:
+        def client(path=""):
+            return Protect(http, "unused", "bridge", "right", "public_ca",
+                           base_url=str(server.make_url(path)).rstrip("/"))
+        yield client, elsewhere
+
+
+async def test_a_login_without_answer_is_a_protect_error(slow_console):
+    client, _ = slow_console
+    with pytest.raises(ProtectError, match="did not answer"):
+        await client().login()
+
+
+async def test_a_request_without_answer_is_a_protect_error(slow_console):
+    client, _ = slow_console
+    with pytest.raises(ProtectError, match="no answer"):
+        await client().bootstrap()
+
+
+async def test_the_login_follows_no_redirect(slow_console):
+    client, elsewhere = slow_console
+    with pytest.raises(ProtectError, match="HTTP 307"):
+        await client("/redirect").login()
+    assert elsewhere == []                   # the password went nowhere else
