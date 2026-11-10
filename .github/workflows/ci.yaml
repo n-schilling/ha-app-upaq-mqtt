@@ -1,9 +1,13 @@
 name: CI
+# scripts/check.sh runs the same checks locally; keep the two in step.
 
 on:
   push:
     branches: [main, dev]
   pull_request:
+  schedule:
+    # Weekly, so a new base image or linter release that breaks the build shows up
+    - cron: "41 4 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -28,6 +32,7 @@ jobs:
           shellcheck --shell=bash --severity=warning
           upaq_mqtt/rootfs/etc/s6-overlay/s6-rc.d/bridge/run
           upaq_mqtt/rootfs/etc/s6-overlay/s6-rc.d/bridge/finish
+          scripts/check.sh
 
   unit:
     name: Unit tests
@@ -41,13 +46,16 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install
-        run: pip install -r upaq_mqtt/requirements.txt pytest==9.1.1 pytest-aiohttp==1.1.1 ruff==0.17.3
+        # The app's packages with their hashes as in the image, then the tools
+        run: |
+          pip install --require-hashes -r upaq_mqtt/requirements.txt
+          pip install pytest==9.1.1 pytest-aiohttp==1.1.1 ruff==0.17.3
       - name: Ruff
         run: ruff check upaq_mqtt/rootfs/usr/lib/upaq_bridge tests
       - name: Start a broker
         run: >-
           docker run -d --name broker -p 1883:1883
-          -v "${PWD}/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.1.2-alpine
+          -v "${PWD}/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.1.2-alpine@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98
       - name: Test
         env:
           MQTT_TEST_HOST: localhost
