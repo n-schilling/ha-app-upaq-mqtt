@@ -2,6 +2,33 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-11-10
+
+### Added
+
+- With a broker that the Supervisor reports with TLS, the bridge connects with TLS and checks the broker's certificate and name
+- Requires Home Assistant 2026.11 or later
+
+### Changed
+
+- Commands from Home Assistant wait in a queue and go to Protect one at a time, at most one per second; a newer value for the same control replaces one still waiting, and at most 64 commands wait. Reading MQTT no longer waits for Protect
+- Retained commands on the `/set` topics are ignored, so a command left on the broker is not applied at every start
+- After sensors are added to or removed from Protect, the bridge reads the sensor list again with its session after 5 seconds instead of logging in again at once; sensors of other types no longer cause this
+- Logins and requests to Protect follow no redirects, so the password goes to the console only
+- The certificate pinned on first use is logged as a warning that asks you to compare it with the one your browser shows
+- The devices in Home Assistant link to the app under **Settings → Apps**
+- Every Python package in the image, including the indirect ones, is pinned with its hashes, and the base image with its digest (`base-python` 3.14-alpine3.24-2026.11.0)
+- Documentation for Home Assistant 2026.11, with diagrams
+
+### Fixed
+
+- A console that accepts the connection but does not answer within 30 seconds (e.g. during a UniFi OS update) stopped the app for good; it is now an unreachable console, retried with the usual delays. Any other unexpected error while following Protect is logged and retried as well
+- A full or read-only disk while saving the pinned certificate stopped the app; the pin is now kept in memory and the log says so
+- A reading held back by `min_interval` came back as a retained value after its sensor was removed from Protect
+- A reading held back while the bridge waited for another one could go out up to `min_interval` late
+- Entities removed from a sensor (controls switched off, a safe zone deleted) left their last states retained on the broker
+- With a discovery prefix containing `/`, entities announced one by one before 2.1.0 were not handed over or removed
+
 ## [2.4.7] - 2026-10-27
 
 ### Changed
