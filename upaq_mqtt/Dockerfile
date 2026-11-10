@@ -1,11 +1,12 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/base-python:3.14-alpine3.24
-# hadolint ignore=DL3006
-FROM ${BUILD_FROM}
+# A fixed tag and digest, so every build starts from the same image; without a
+# build.yaml the Supervisor passes no BUILD_FROM. Dependabot proposes new ones.
+FROM ghcr.io/home-assistant/base-python:3.14-alpine3.24-2026.11.0@sha256:aafc599627b1ea2c25c154cbd44867fefe024c12c38a2a355d5e8a4d1b6a7bdd
 
 SHELL ["/bin/ash", "-o", "pipefail", "-c"]
 
 COPY requirements.txt /tmp/
-RUN pip3 install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt \
+# Every package pinned with its hashes, so a later upload to PyPI cannot slip in
+RUN pip3 install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
 COPY rootfs /

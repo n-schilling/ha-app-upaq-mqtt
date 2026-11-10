@@ -1,0 +1,5 @@
+# Direct dependencies. requirements.txt pins them and everything they need, with
+# hashes; regenerate it after a change here (see the README, Development).
+aiohttp==3.14.5
+aiomqtt==2.5.1
+paho-mqtt==2.1.0

@@ -14,3 +14,8 @@ updates:
     groups:
       python:
         patterns: ["*"]
+  # The base image in upaq_mqtt/Dockerfile
+  - package-ecosystem: docker
+    directory: /upaq_mqtt
+    schedule:
+      interval: weekly
