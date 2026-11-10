@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 import signal
-import ssl
 import sys
 from pathlib import Path
 
@@ -33,9 +32,9 @@ async def run(cfg: cfg_module.Config) -> None:
     ctx = d.Context(prefix=cfg.discovery_prefix, version=os.environ.get("APP_VERSION", "unknown"),
                     config_url=f"homeassistant://config/app/{slug}/info"
                     if os.environ.get("SUPERVISOR_TOKEN") else None)
-    # A broker with TLS (as the Supervisor reports it): checked against the
-    # system's CAs and its host name
-    tls = ssl.create_default_context() if cfg.mqtt_tls else None
+    # A broker with TLS: its certificate checked against mqtt_ca or the
+    # system's CAs, and its host name
+    tls = cfg_module.tls_context(cfg)
     will = last_will()
     failures = 0
     async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as http:
@@ -46,7 +45,8 @@ async def run(cfg: cfg_module.Config) -> None:
                 async with aiomqtt.Client(cfg.mqtt_host, cfg.mqtt_port, username=cfg.mqtt_username,
                                           password=cfg.mqtt_password, will=will,
                                           tls_context=tls, identifier=f"{slug}-bridge") as mqtt:
-                    LOGGER.info("Connected to MQTT %s:%d", cfg.mqtt_host, cfg.mqtt_port)
+                    LOGGER.info("Connected to MQTT %s:%d%s", cfg.mqtt_host, cfg.mqtt_port,
+                                " with TLS" if tls else "")
                     failures = 0
 
                     router = Router(mqtt)

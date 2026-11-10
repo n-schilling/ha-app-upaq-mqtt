@@ -33,6 +33,7 @@ jobs:
           upaq_mqtt/rootfs/etc/s6-overlay/s6-rc.d/bridge/run
           upaq_mqtt/rootfs/etc/s6-overlay/s6-rc.d/bridge/finish
           scripts/check.sh
+          tests/make-certs.sh
 
   unit:
     name: Unit tests
@@ -53,13 +54,18 @@ jobs:
       - name: Ruff
         run: ruff check upaq_mqtt/rootfs/usr/lib/upaq_bridge tests
       - name: Start a broker
-        run: >-
-          docker run -d --name broker -p 1883:1883
-          -v "${PWD}/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.1.2-alpine@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98
+        # 1883 plain, 8883 with TLS and a throwaway CA
+        run: |
+          tests/make-certs.sh "${RUNNER_TEMP}/certs"
+          docker run -d --name broker -p 1883:1883 -p 8883:8883 \
+            -v "${PWD}/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
+            -v "${RUNNER_TEMP}/certs:/mosquitto/certs:ro" \
+            eclipse-mosquitto:2.1.2-alpine@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98
       - name: Test
         env:
           MQTT_TEST_HOST: localhost
-        run: pytest -v
+          MQTT_TEST_TLS_PORT: "8883"
+        run: MQTT_TEST_CERTS="${RUNNER_TEMP}/certs" pytest -v
       - name: Broker log
         if: failure()
         run: docker logs broker

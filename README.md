@@ -51,7 +51,7 @@ The [documentation](upaq_mqtt/DOCS.md) covers the options, the certificate check
 
 ## Development
 
-The bridge is a Python package in [`upaq_mqtt/rootfs/usr/lib/upaq_bridge`](upaq_mqtt/rootfs/usr/lib/upaq_bridge). `scripts/check.sh` runs what CI runs: the changelog check, shellcheck, ruff, the tests (with a Mosquitto broker in Docker), the image build and its start without options. It needs [uv](https://docs.astral.sh/uv/) and Docker:
+The bridge is a Python package in [`upaq_mqtt/rootfs/usr/lib/upaq_bridge`](upaq_mqtt/rootfs/usr/lib/upaq_bridge). `scripts/check.sh` runs what CI runs: the changelog check, shellcheck, ruff, the tests (with a Mosquitto broker in Docker, plain and with TLS), the image build and its start without options. It needs [uv](https://docs.astral.sh/uv/) and Docker:
 
 ```bash
 scripts/check.sh

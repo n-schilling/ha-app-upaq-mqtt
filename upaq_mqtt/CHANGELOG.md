@@ -6,6 +6,7 @@ All notable changes to this app are documented here. The format follows [Keep a 
 
 ### Added
 
+- Options `mqtt_tls` and `mqtt_ca` for a broker set with `mqtt_host`: the connection is encrypted, and the broker's certificate must chain to the CA file named in `mqtt_ca` (in Home Assistant's `ssl` folder, which the app now reads) or to a public CA, and name the broker's host. The port then defaults to 8883
 - With a broker that the Supervisor reports with TLS, the bridge connects with TLS and checks the broker's certificate and name
 - Requires Home Assistant 2026.11 or later
 

@@ -1,9 +1,8 @@
 """The bridge against a real MQTT broker: device discovery, the hand-over of
 single entity topics, retained states, commands and the last will.
 
-Needs a broker without authentication, e.g. from tests/mosquitto.conf:
-    docker run -d -p 1883:1883 -v "$PWD/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.1.2-alpine
-    MQTT_TEST_HOST=localhost pytest tests/test_broker.py
+Needs a broker without authentication: the one of tests/mosquitto.conf, as
+scripts/check.sh and CI start it, with MQTT_TEST_HOST (and MQTT_TEST_PORT).
 """
 
 import asyncio

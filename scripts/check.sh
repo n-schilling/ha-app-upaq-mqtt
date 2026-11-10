@@ -59,6 +59,7 @@ shell_scripts=(
     upaq_mqtt/rootfs/etc/s6-overlay/s6-rc.d/bridge/run
     upaq_mqtt/rootfs/etc/s6-overlay/s6-rc.d/bridge/finish
     scripts/check.sh
+    tests/make-certs.sh
 )
 shellcheck_run() {
     if command -v shellcheck > /dev/null; then
@@ -89,16 +90,23 @@ unit_tests() {
         return
     fi
     docker rm -f "$BROKER" > /dev/null 2>&1
-    # A free port of its own, so a broker already running here does not matter
-    docker run -d --name "$BROKER" -p 127.0.0.1::1883 \
-        -v "$PWD/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" "$MOSQUITTO_IMAGE" > /dev/null || return 1
-    local port
+    local certs
+    certs=$(mktemp -d) || return 1
+    tests/make-certs.sh "$certs" || return 1
+    # Free ports of its own, so a broker already running here does not matter
+    docker run -d --name "$BROKER" -p 127.0.0.1::1883 -p 127.0.0.1::8883 \
+        -v "$PWD/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
+        -v "$certs:/mosquitto/certs:ro" "$MOSQUITTO_IMAGE" > /dev/null || return 1
+    local port tls_port
     port=$(docker port "$BROKER" 1883/tcp | head -n 1 | sed 's/.*://')
+    tls_port=$(docker port "$BROKER" 8883/tcp | head -n 1 | sed 's/.*://')
     sleep 1
-    MQTT_TEST_HOST=127.0.0.1 MQTT_TEST_PORT="$port" .venv/bin/pytest -q
+    MQTT_TEST_HOST=127.0.0.1 MQTT_TEST_PORT="$port" MQTT_TEST_TLS_PORT="$tls_port" \
+        MQTT_TEST_CERTS="$certs" .venv/bin/pytest -q
     local result=$?
     ((result)) && docker logs "$BROKER"
     docker rm -f "$BROKER" > /dev/null
+    rm -rf "$certs"
     return "$result"
 }
 start_without_options() {

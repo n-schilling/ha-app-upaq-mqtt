@@ -46,6 +46,8 @@ sequenceDiagram
 | `min_interval` | `60` | Seconds between two published values of one reading; `0` publishes every change |
 | `discovery_prefix` | `homeassistant` | MQTT discovery prefix |
 | `mqtt_host`, `mqtt_port`, `mqtt_username`, `mqtt_password` | | Only for a broker the Supervisor does not know; shown with *Show unused optional configuration options* |
+| `mqtt_tls` | `false` | With `mqtt_host`: connect with TLS (see *Security*); `mqtt_port` then defaults to `8883` |
+| `mqtt_ca` | | With TLS: file name of the CA certificate (PEM) the broker's certificate must chain to, in Home Assistant's `ssl` folder, e.g. `mqtt-ca.pem`; empty trusts public CAs |
 | `log_level` | `info` | How much the app writes to its log: `info`, `warning` or `error` |
 
 ### The console's certificate
@@ -80,7 +82,7 @@ UniFi consoles answer plain HTTP only with a redirect to HTTPS, for the login an
 
 - **The Protect user.** *View Only* is enough for all readings, vape detection and safe zones. `enable_controls` needs a role that may change device settings in Protect; UniFi OS offers *Full Management* for that, which also covers cameras, recordings and users. Turn `enable_controls` on only if you need the controls, and keep the user restricted to local access.
 - **Who can send commands.** With `enable_controls` the bridge takes commands from the MQTT topics `up_airquality/+/+/set`, `up_airquality/+/thresh/+/+/set` and `up_airquality/+/events/+/set`. MQTT does not say who sent a message: anybody who may write to these topics on the broker can change the sensors' settings, e.g. switch off *Events to Capture* for vape. With the Mosquitto broker app that is every Home Assistant user and every app using MQTT. If that matters to you, limit write access to `up_airquality/#` to Home Assistant's own MQTT user with the broker's ACLs. The bridge checks every command against the sensor and the allowed range, ignores retained commands, writes at most one per second to Protect and keeps at most 64 waiting.
-- **The broker connection.** With the Mosquitto broker app the connection stays inside Home Assistant's internal network. If the Supervisor reports the broker with TLS, the bridge uses TLS and checks the broker's certificate and name. A broker set with `mqtt_host` is reached without TLS: its user, password, the readings and the commands cross your network in clear text.
+- **The broker connection.** With the Mosquitto broker app the connection stays inside Home Assistant's internal network. If the Supervisor reports the broker with TLS, the bridge uses TLS and checks the broker's certificate and name. A broker set with `mqtt_host` is reached without TLS unless you turn on `mqtt_tls`; without it, its user, password, the readings and the commands cross your network in clear text. With `mqtt_tls` the broker's certificate must name the host in `mqtt_host` (the name or IP address, as the certificate lists it) and chain to a public CA or, with `mqtt_ca`, to your own CA: put its certificate (PEM, not the key) into Home Assistant's `ssl` folder, e.g. with the File editor or Samba app, and enter its file name. Only that CA is trusted then. The app reads the `ssl` folder and cannot change it.
 
 ```mermaid
 stateDiagram-v2
@@ -194,6 +196,7 @@ The entity IDs follow the sensor names in Protect; adjust them to yours.
 - **"public_ca needs protect_host to be the name"**: a certificate names the console, not its IP address; enter the name or choose `pin`.
 - **"login failed with HTTP 301"** (or another 3xx): `protect_host` points to something that redirects, e.g. another port or path; enter the console's own address.
 - **"did not answer … within 30 s"**: the console accepts connections but Protect is busy, e.g. during an update. The bridge tries again on its own.
+- **"CERTIFICATE_VERIFY_FAILED"** in the MQTT log lines: with `mqtt_tls` the broker's certificate is not signed by `mqtt_ca` (or a public CA), or it does not name the host in `mqtt_host`. **"mqtt_ca … not found"**: the file is not in Home Assistant's `ssl` folder; enter the file name only.
 - **"Could not save the pinned certificate"**: the app's data folder is full or read-only. The bridge keeps working with the pin in memory but pins again at the next start.
 - **No entities**: the log lists the sensors found at every start. Check that the MQTT integration is set up and uses the discovery prefix of the app.
 - **Values change only once a minute**: that is `min_interval`; set it lower, at the cost of a bigger recorder database.
@@ -205,7 +208,6 @@ The entity IDs follow the sensor names in Protect; adjust them to yours.
 - Uses the private API of the Protect application, which Ubiquiti may change with a Protect update.
 - A UniFi console with several Protect instances is not supported.
 - Readings arrive about once a second; `min_interval` thins them out per reading, so a short spike between two publications may not show up.
-- A broker set with `mqtt_host` is reached without TLS.
 
 ## Removing the app
 

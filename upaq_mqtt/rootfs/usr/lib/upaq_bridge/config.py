@@ -6,12 +6,15 @@ import ipaddress
 import json
 import os
 import re
+import ssl
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
 OPTIONS = Path("/data/options.json")
+# Home Assistant's shared certificate folder, mapped read-only into the app
+SSL_DIR = Path("/ssl")
 FINGERPRINT = re.compile(r"^([0-9A-Fa-f]{2}:?){31}[0-9A-Fa-f]{2}$")
 # How the console's certificate is checked
 CHECKS = ("pin", "accept_any", "public_ca")
@@ -33,6 +36,7 @@ class Config:
     mqtt_username: str | None
     mqtt_password: str | None
     mqtt_tls: bool
+    mqtt_ca: Path | None           # CA file the broker's certificate must chain to
     discovery_prefix: str
     enable_controls: bool
     min_interval: int
@@ -52,6 +56,28 @@ def supervisor_mqtt() -> dict:
     except (OSError, ValueError, KeyError) as err:
         raise ConfigError(f"no MQTT broker available from the Supervisor ({err}); "
                           "install the Mosquitto broker app or set mqtt_host") from err
+
+
+def ca_file(name: str, base: Path = SSL_DIR) -> Path:
+    """The CA file mqtt_ca names, inside Home Assistant's ssl folder."""
+    path = (base / name.strip()).resolve()
+    if not path.is_relative_to(base.resolve()):
+        raise ConfigError(f"mqtt_ca {name!r} must be a file in Home Assistant's ssl folder")
+    if not path.is_file():
+        raise ConfigError(f"mqtt_ca {name!r} not found in Home Assistant's ssl folder")
+    return path
+
+
+def tls_context(cfg: Config) -> ssl.SSLContext | None:
+    """TLS for the broker connection: the broker's certificate must chain to
+    mqtt_ca, else to a public CA, and name the broker's host."""
+    if not cfg.mqtt_tls:
+        return None
+    try:
+        return ssl.create_default_context(cafile=str(cfg.mqtt_ca) if cfg.mqtt_ca else None)
+    except (OSError, ssl.SSLError) as err:
+        raise ConfigError(f"mqtt_ca {cfg.mqtt_ca.name if cfg.mqtt_ca else ''} is no "
+                          f"readable PEM certificate: {err}") from err
 
 
 def normalize_host(raw: str) -> str:
@@ -89,7 +115,7 @@ def is_ip_address(host: str) -> bool:
     return True
 
 
-def load(path: Path = OPTIONS, mqtt_service=supervisor_mqtt) -> Config:
+def load(path: Path = OPTIONS, mqtt_service=supervisor_mqtt, ssl_dir: Path = SSL_DIR) -> Config:
     try:
         opts = json.loads(path.read_text())
     except (OSError, ValueError) as err:
@@ -117,13 +143,21 @@ def load(path: Path = OPTIONS, mqtt_service=supervisor_mqtt) -> Config:
                           "console's certificate, not an IP address; or choose pin")
 
     if opts.get("mqtt_host"):
-        mqtt = {"host": opts["mqtt_host"], "port": opts.get("mqtt_port") or 1883,
+        tls = opts.get("mqtt_tls") is True
+        mqtt = {"host": opts["mqtt_host"], "port": opts.get("mqtt_port") or (8883 if tls else 1883),
                 "username": opts.get("mqtt_username") or None,
-                "password": opts.get("mqtt_password") or None, "ssl": False}
+                "password": opts.get("mqtt_password") or None, "ssl": tls}
     else:
+        # mqtt_tls is for a broker set by hand; the Supervisor says itself
         mqtt = mqtt_service()
+    tls = mqtt.get("ssl") is True
+    ca = None
+    if (opts.get("mqtt_ca") or "").strip():
+        if not tls:
+            raise ConfigError("mqtt_ca is only used with TLS: turn on mqtt_tls or clear mqtt_ca")
+        ca = ca_file(opts["mqtt_ca"], ssl_dir)
 
-    return Config(
+    cfg = Config(
         protect_host=host,
         protect_username=opts["protect_username"],
         protect_password=opts["protect_password"],
@@ -133,9 +167,12 @@ def load(path: Path = OPTIONS, mqtt_service=supervisor_mqtt) -> Config:
         mqtt_port=int(mqtt.get("port") or 1883),
         mqtt_username=mqtt.get("username") or None,
         mqtt_password=mqtt.get("password") or None,
-        mqtt_tls=mqtt.get("ssl") is True,
+        mqtt_tls=tls,
+        mqtt_ca=ca,
         discovery_prefix=opts.get("discovery_prefix") or "homeassistant",
         enable_controls=bool(opts.get("enable_controls", False)),
         min_interval=int(opts.get("min_interval", 60)),
         log_level=str(opts.get("log_level") or "info").upper(),
     )
+    tls_context(cfg)    # a broken CA file is named at the start
+    return cfg

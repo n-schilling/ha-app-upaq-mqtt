@@ -34,6 +34,12 @@ configuration:
     name: MQTT user
   mqtt_password:
     name: MQTT password
+  mqtt_tls:
+    name: MQTT with TLS
+    description: Only with MQTT host. Encrypts the connection and checks the broker's certificate and name; the port then defaults to 8883.
+  mqtt_ca:
+    name: MQTT CA certificate
+    description: Optional, with MQTT with TLS. File name of the CA certificate (PEM) in Home Assistant's ssl folder, e.g. mqtt-ca.pem; empty trusts public CAs.
   log_level:
     name: Log level
     description: "How much the app writes to its log: info, warning or error."

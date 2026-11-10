@@ -1,15 +1,29 @@
 """Option loading."""
 
 import json
+import ssl
 
 import pytest
 
-from upaq_bridge.config import ConfigError, load, normalize_host
+from upaq_bridge.config import ConfigError, load, normalize_host, tls_context
 
 BASE = {"protect_host": "10.0.0.1", "protect_username": "bridge", "protect_password": "pw",
-        "certificate_check": "pin", "certificate_fingerprint": "", "mqtt_host": "", "mqtt_port": 1883,
-        "mqtt_username": "", "mqtt_password": "", "discovery_prefix": "homeassistant",
+        "certificate_check": "pin", "certificate_fingerprint": "", "discovery_prefix": "homeassistant",
         "enable_controls": False, "min_interval": 60, "log_level": "info"}
+
+# A throwaway self-signed CA, only ever loaded, never trusted for anything
+CA_PEM = """\
+-----BEGIN CERTIFICATE-----
+MIIBcDCCARagAwIBAgIUGk2A1Y9zLRuDhbCpJJsaXb/5gkswCgYIKoZIzj0EAwIw
+HjEcMBoGA1UEAwwTVVBBUSBjb25maWcgdGVzdCBDQTAeFw0yNjExMTAxOTQxMTha
+Fw0zNjExMDcxOTQxMThaMB4xHDAaBgNVBAMME1VQQVEgY29uZmlnIHRlc3QgQ0Ew
+WTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAS56wey4AvJJzsDGBqWAXoMSYvPJrvc
+6qmC5bkR5qo633VFQqIH4jLYByV/+GTz3/tlN1K7Sc0z2zIwW9kO+6m+ozIwMDAd
+BgNVHQ4EFgQUoCq4wE0ctmhHVWOvZoxuge+ha5QwDwYDVR0TAQH/BAUwAwEB/zAK
+BggqhkjOPQQDAgNIADBFAiBvLIKU9oeoXc5FcljG0T0F+kkTNh2BkEx8dwtQlkOZ
+hwIhAJYcFl0tUMvwgRkFlgxUTJ/9x+YIJnvww8R6uw++AHIB
+-----END CERTIFICATE-----
+"""
 
 
 def write(tmp_path, **changes):
@@ -101,3 +115,51 @@ def test_tls_of_the_supervisor_broker_is_used(tmp_path):
     cfg = load(write(tmp_path), lambda: {**service(), "port": 8883, "ssl": True})
     assert (cfg.mqtt_port, cfg.mqtt_tls) == (8883, True)
     assert load(write(tmp_path), service).mqtt_tls is False
+
+
+def test_tls_for_an_own_broker(tmp_path):
+    cfg = load(write(tmp_path, mqtt_host="broker.lan", mqtt_tls=True), service)
+    assert (cfg.mqtt_port, cfg.mqtt_tls, cfg.mqtt_ca) == (8883, True, None)
+    assert tls_context(cfg).verify_mode == ssl.CERT_REQUIRED
+    assert tls_context(cfg).check_hostname
+    cfg = load(write(tmp_path, mqtt_host="broker.lan", mqtt_port=1884, mqtt_tls=True), service)
+    assert cfg.mqtt_port == 1884
+    plain = load(write(tmp_path, mqtt_host="broker.lan"), service)
+    assert (plain.mqtt_port, plain.mqtt_tls, tls_context(plain)) == (1883, False, None)
+
+
+def test_mqtt_tls_does_not_change_the_supervisor_broker(tmp_path):
+    assert load(write(tmp_path, mqtt_tls=True), service).mqtt_tls is False
+
+
+def test_ca_from_the_ssl_folder(tmp_path):
+    ssl_dir = tmp_path / "ssl"
+    ssl_dir.mkdir()
+    (ssl_dir / "ca.pem").write_text(CA_PEM)
+    cfg = load(write(tmp_path, mqtt_host="broker.lan", mqtt_tls=True, mqtt_ca=" ca.pem "),
+               service, ssl_dir)
+    assert cfg.mqtt_ca == (ssl_dir / "ca.pem").resolve()
+    assert len(tls_context(cfg).get_ca_certs()) == 1
+    # Also for the Supervisor's broker when it reports TLS
+    cfg = load(write(tmp_path, mqtt_ca="ca.pem"), lambda: {**service(), "ssl": True}, ssl_dir)
+    assert cfg.mqtt_ca is not None
+
+
+@pytest.mark.parametrize("name, match", [
+    ("missing.pem", "not found"),
+    ("../secret.pem", "must be a file in"),
+    ("/etc/passwd", "must be a file in"),
+    ("broken.pem", "no readable PEM"),
+])
+def test_bad_ca_is_named(tmp_path, name, match):
+    ssl_dir = tmp_path / "ssl"
+    ssl_dir.mkdir()
+    (ssl_dir / "broken.pem").write_text("not a certificate")
+    (tmp_path / "secret.pem").write_text(CA_PEM)
+    with pytest.raises(ConfigError, match=match):
+        load(write(tmp_path, mqtt_host="broker.lan", mqtt_tls=True, mqtt_ca=name), service, ssl_dir)
+
+
+def test_ca_without_tls_is_named(tmp_path):
+    with pytest.raises(ConfigError, match="only used with TLS"):
+        load(write(tmp_path, mqtt_host="broker.lan", mqtt_ca="ca.pem"), service)
