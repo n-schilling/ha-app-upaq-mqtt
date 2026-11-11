@@ -63,7 +63,7 @@ The image's Python packages are pinned with their hashes in `upaq_mqtt/requireme
 cd upaq_mqtt && uv pip compile requirements.in --universal --python-version 3.14 --generate-hashes --no-annotate -o requirements.txt
 ```
 
-Releases: work on `dev`, raise `version` in `upaq_mqtt/config.yaml` and add its section to the changelog; once `main` is green, the release workflow tags the version and publishes the release with that section.
+Releases: work on `dev`, raise `version` in `upaq_mqtt/config.yaml` and add its section to the changelog. CI runs on `dev` (amd64 and aarch64 each on a runner of its own kind); once it is green, push that commit to `main`. CI does not run again there: the release workflow checks that CI passed for the commit, then tags the version and publishes the release with that section.
 
 ## Support
 
