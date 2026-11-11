@@ -3,8 +3,7 @@ abi <abi/3.0>,
 
 # Talks to the UniFi console and the MQTT broker; writes only its sensor list
 # and the pinned certificate to /data. s6-overlay runs as root and hands the
-# data folder to user upaq, as which the bridge runs. Measured on Home
-# Assistant OS in complain mode before it enforced.
+# data folder to user upaq, as which the bridge runs. Tested on a real installation.
 profile upaq_mqtt flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
 
