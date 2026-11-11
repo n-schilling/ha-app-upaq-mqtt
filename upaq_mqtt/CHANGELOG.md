@@ -2,6 +2,17 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1] - 2026-11-11
+
+### Security
+
+- The bridge no longer runs as root, but as a user of its own, to which the app hands its data folder on start
+- A narrower AppArmor profile: only the capabilities, networks, programs and paths the app uses, measured on Home Assistant OS before it was enforced
+
+### Changed
+
+- A CA file for `mqtt_ca` must be readable for everyone (`644`, as certificates usually are)
+
 ## [2.5.0] - 2026-11-10
 
 ### Added
