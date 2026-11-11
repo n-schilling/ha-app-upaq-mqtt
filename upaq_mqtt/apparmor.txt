@@ -1,10 +1,14 @@
+abi <abi/3.0>,
 #include <tunables/global>
 
 # Talks to the UniFi console and the MQTT broker; writes only its sensor list
-# to /data
+# and the pinned certificate to /data. s6-overlay runs as root and hands the
+# data folder to user upaq, as which the bridge runs. Measured on Home
+# Assistant OS in complain mode before it enforced.
 profile upaq_mqtt flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
 
+  # s6-overlay, and the hand-over of /data to the bridge's user
   capability chown,
   capability dac_override,
   capability fowner,
@@ -12,14 +16,54 @@ profile upaq_mqtt flags=(attach_disconnected,mediate_deleted) {
   capability setgid,
   capability setuid,
 
-  network inet,
-  network inet6,
+  network inet dgram,
+  network inet6 dgram,
+  network inet stream,
+  network inet6 stream,
   network unix,
 
   # s6 stops its services; the Supervisor stops the container
-  signal (send, receive),
+  signal (send, receive) peer=@{profile_name},
+  signal (receive) peer=unconfined,
 
-  file,
+  # s6-overlay
+  /init ix,
+  /package/** rix,
+  /command/** rix,
+  /etc/s6-overlay/** rix,
+  /run/** rwk,
+  /run/ r,
+
+  # Programs and libraries of the image
+  /bin/** rix,
+  /sbin/** rix,
+  /usr/bin/** rix,
+  /usr/sbin/** rix,
+  /usr/local/bin/** rix,
+  /usr/lib/** rm,
+  /usr/local/lib/** rm,
+  /lib/** rm,
+  /usr/share/** r,
+  /etc/** r,
+
+  # bashio
+  /tmp/ r,
+  /tmp/** rwk,
+
+  # Options, sensor list, pinned certificate
+  /data/ r,
+  /data/** rwk,
+  # mqtt_ca, read only
+  /ssl/ r,
+  /ssl/** r,
+
+  @{PROC}/@{pid}/** r,
+  @{PROC}/ r,
+  /dev/null rw,
+  /dev/urandom r,
+  /dev/random r,
+  /dev/tty rw,
+
   deny /proc/sys/** w,
   deny /sys/** w,
 }

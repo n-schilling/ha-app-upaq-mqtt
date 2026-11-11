@@ -110,9 +110,10 @@ unit_tests() {
     return "$result"
 }
 start_without_options() {
-    # The bridge loads, finds no options and says what to set
+    # The bridge loads as its own user, as the s6 service starts it, finds no
+    # options and says what to set
     local out
-    out=$(docker run --rm --network none -e PYTHONPATH=/usr/lib \
+    out=$(docker run --rm --network none --user upaq -e PYTHONPATH=/usr/lib \
         --entrypoint python3 "$IMAGE" -m upaq_bridge 2>&1)
     echo "$out"
     grep -q '/data/options.json not readable' <<< "$out"

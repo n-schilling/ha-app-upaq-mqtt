@@ -7,7 +7,9 @@ SHELL ["/bin/ash", "-o", "pipefail", "-c"]
 COPY requirements.txt /tmp/
 # Every package pinned with its hashes, so a later upload to PyPI cannot slip in
 RUN pip3 install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/requirements.txt \
-    && rm /tmp/requirements.txt
+    && rm /tmp/requirements.txt \
+    && addgroup -S upaq \
+    && adduser -S -D -H -G upaq -h /nonexistent -s /sbin/nologin upaq
 
 COPY rootfs /
 RUN python3 -m compileall -q /usr/lib/upaq_bridge

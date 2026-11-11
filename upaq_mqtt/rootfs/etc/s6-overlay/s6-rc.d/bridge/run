@@ -1,7 +1,10 @@
 #!/command/with-contenv bashio
 # shellcheck shell=bash
 # ==============================================================================
-# Runs the UP-AirQuality MQTT bridge
+# Runs the UP-AirQuality MQTT bridge as user upaq, not as root. Its data folder
+# (the options, the sensor list and the pinned certificate) is handed to that
+# user first; the Supervisor writes the options as root.
 # ==============================================================================
+chown -R upaq:upaq /data
 export PYTHONPATH=/usr/lib
-exec python3 -m upaq_bridge
+exec /command/s6-setuidgid upaq python3 -m upaq_bridge

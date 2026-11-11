@@ -99,9 +99,10 @@ jobs:
       - name: Start without options
         env:
           PLATFORM: ${{ matrix.platform }}
-        # The bridge loads, finds no options and says what to set
+        # The bridge loads as its own user, as the s6 service starts it, finds
+        # no options and says what to set
         run: |
-          out=$(docker run --rm --network none --platform "${PLATFORM}" -e PYTHONPATH=/usr/lib \
+          out=$(docker run --rm --network none --platform "${PLATFORM}" --user upaq -e PYTHONPATH=/usr/lib \
             --entrypoint python3 upaq-mqtt:test -m upaq_bridge 2>&1 || true)
           echo "${out}"
           grep -q '/data/options.json not readable' <<< "${out}"
