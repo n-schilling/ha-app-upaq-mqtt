@@ -1,6 +1,7 @@
 name: UP-AirQuality MQTT Bridge
-version: "2.5.2"
+version: "2.5.3"
 slug: upaq_mqtt
+image: ghcr.io/n-schilling/{arch}-upaq-mqtt
 description: Brings UniFi Protect UP-AirQuality sensors into Home Assistant via MQTT discovery
 url: https://github.com/n-schilling/ha-app-upaq-mqtt
 homeassistant: 2026.11.0
